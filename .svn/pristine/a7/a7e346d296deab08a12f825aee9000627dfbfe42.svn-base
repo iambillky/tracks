@@ -1,0 +1,890 @@
+<!--
+File: templates/datacenters/rack_detail.html
+Purpose: Simple read-only detail view for rack information
+Version: 1.2.0
+Author: iambilky
+
+Revision History:
+- v1.0.0: Initial creation with basic rack details display
+- v1.1.0: Added visual rack diagram showing equipment placement
+- v1.2.0: Fixed utilization bar display, added device detail links
+-->
+
+{% extends "base.html" %}
+
+{% block title %}Rack {{ rack.rack_id }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* ========== CONTAINER ========== */
+    .detail-container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 0 20px;
+    }
+    
+    /* ========== HEADER BAR ========== */
+    .rack-header-bar {
+        background: linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(96, 165, 250, 0.08));
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        border-radius: 12px;
+        padding: 30px;
+        margin-bottom: 30px;
+    }
+    
+    .rack-header-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    
+    .rack-title-section {
+        flex: 1;
+    }
+    
+    .rack-id-display {
+        color: #60a5fa;
+        font-size: 2.5rem;
+        font-weight: 700;
+        font-family: 'Courier New', monospace;
+        margin-bottom: 10px;
+    }
+    
+    .rack-location {
+        color: #e4e6eb;
+        font-size: 1.1rem;
+        margin-bottom: 5px;
+    }
+    
+    .rack-floor {
+        color: #8b92a5;
+        font-size: 0.95rem;
+    }
+    
+    .action-buttons {
+        display: flex;
+        gap: 12px;
+    }
+    
+    /* ========== STATS GRID ========== */
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 20px;
+        margin-bottom: 30px;
+    }
+    
+    .stat-card {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 20px;
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        transition: all 0.3s ease;
+    }
+    
+    .stat-card:hover {
+        background: rgba(255, 255, 255, 0.08);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
+    
+    .stat-icon {
+        font-size: 2.5rem;
+        line-height: 1;
+    }
+    
+    .stat-content {
+        flex: 1;
+    }
+    
+    .stat-value {
+        color: #60a5fa;
+        font-size: 1.8rem;
+        font-weight: 700;
+        line-height: 1;
+        margin-bottom: 5px;
+    }
+    
+    .stat-label {
+        color: #8b92a5;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    
+    /* ========== INFO CARDS ========== */
+    .info-card {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 25px;
+        margin-bottom: 25px;
+    }
+    
+    .info-card-header {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        padding-bottom: 15px;
+        margin-bottom: 20px;
+    }
+    
+    .info-card-title {
+        color: #60a5fa;
+        font-size: 1.2rem;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .info-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 20px;
+    }
+    
+    .info-item {
+        display: flex;
+        flex-direction: column;
+        padding: 10px;
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 8px;
+    }
+    
+    .info-label {
+        color: #8b92a5;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 8px;
+    }
+    
+    .info-value {
+        color: #ffffff;
+        font-size: 1rem;
+        line-height: 1.5;
+    }
+    
+    .info-value.large {
+        font-size: 1.2rem;
+        font-weight: 600;
+        color: #60a5fa;
+    }
+    
+    .info-value.mono {
+        font-family: 'Courier New', monospace;
+    }
+    
+    /* ========== UTILIZATION BAR - FIXED ========== */
+    .utilization-visual {
+        margin-top: 20px;
+    }
+    
+    .utilization-bar {
+        height: 30px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        overflow: hidden;
+        position: relative;
+    }
+    
+    .utilization-fill {
+        height: 100%;
+        transition: width 0.6s ease;
+        position: relative;
+    }
+    
+    .utilization-low { background: linear-gradient(90deg, #10b981, #34d399); }
+    .utilization-medium { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+    .utilization-high { background: linear-gradient(90deg, #ef4444, #f87171); }
+    
+    .utilization-text {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        color: #fff;
+        font-weight: 600;
+        font-size: 0.9rem;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+        white-space: nowrap;
+    }
+    
+    .utilization-details {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 10px;
+        color: #8b92a5;
+        font-size: 0.9rem;
+    }
+    
+    /* ========== RACK VISUALIZATION ========== */
+    .rack-visual-container {
+        display: grid;
+        grid-template-columns: 1fr 2fr;
+        gap: 30px;
+        margin-top: 20px;
+    }
+    
+    .rack-diagram {
+        background: #0f1419;
+        border: 2px solid rgba(255, 255, 255, 0.2);
+        border-radius: 8px;
+        padding: 15px;
+        position: relative;
+    }
+    
+    .rack-diagram-title {
+        color: #60a5fa;
+        font-weight: 600;
+        text-align: center;
+        margin-bottom: 15px;
+        font-size: 1.1rem;
+    }
+    
+    .rack-units {
+        display: flex;
+        flex-direction: column-reverse;
+        gap: 2px;
+    }
+    
+    .rack-unit {
+        display: flex;
+        align-items: center;
+        height: 20px;
+        position: relative;
+    }
+    
+    .rack-unit-number {
+        width: 35px;
+        color: #8b92a5;
+        font-size: 0.75rem;
+        font-family: monospace;
+        text-align: right;
+        padding-right: 8px;
+    }
+    
+    .rack-unit-slot {
+        flex: 1;
+        height: 100%;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 2px;
+        position: relative;
+        transition: all 0.2s ease;
+    }
+    
+    .rack-unit-slot.empty:hover {
+        background: rgba(96, 165, 250, 0.1);
+        border-color: rgba(96, 165, 250, 0.3);
+    }
+    
+    .rack-unit-slot.occupied {
+        background: linear-gradient(90deg, rgba(59, 130, 246, 0.3), rgba(96, 165, 250, 0.2));
+        border-color: rgba(96, 165, 250, 0.5);
+    }
+    
+    .rack-unit-slot.pdu {
+        background: linear-gradient(90deg, rgba(245, 158, 11, 0.3), rgba(251, 191, 36, 0.2));
+        border-color: rgba(245, 158, 11, 0.5);
+    }
+    
+    .device-label {
+        position: absolute;
+        left: 5px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #ffffff;
+        font-size: 0.7rem;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: calc(100% - 10px);
+    }
+    
+    .rack-legend {
+        margin-top: 20px;
+        padding-top: 15px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .legend-title {
+        color: #8b92a5;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 10px;
+    }
+    
+    .legend-items {
+        display: flex;
+        gap: 20px;
+    }
+    
+    .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    
+    .legend-color {
+        width: 20px;
+        height: 12px;
+        border-radius: 2px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    
+    .legend-label {
+        color: #e4e6eb;
+        font-size: 0.85rem;
+    }
+    
+    .equipment-list {
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 8px;
+        padding: 15px;
+    }
+    
+    .equipment-list-title {
+        color: #60a5fa;
+        font-weight: 600;
+        margin-bottom: 15px;
+    }
+    
+    .equipment-item {
+        padding: 10px;
+        margin-bottom: 8px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 6px;
+        transition: all 0.2s ease;
+        cursor: pointer;
+    }
+    
+    .equipment-item:hover {
+        background: rgba(255, 255, 255, 0.05);
+        border-color: rgba(96, 165, 250, 0.2);
+    }
+    
+    /* CHANGED: Added link styling for equipment name */
+    .equipment-name {
+        color: #60a5fa;
+        font-weight: 600;
+        margin-bottom: 5px;
+        text-decoration: none;
+        display: inline-block;
+        transition: color 0.2s ease;
+    }
+    
+    .equipment-name:hover {
+        color: #93bbfc;
+        text-decoration: underline;
+    }
+    
+    .equipment-details {
+        color: #8b92a5;
+        font-size: 0.85rem;
+        display: flex;
+        gap: 15px;
+    }
+    
+    @media (max-width: 768px) {
+        .rack-visual-container {
+            grid-template-columns: 1fr;
+        }
+    }
+    
+    /* ========== PDU LIST ========== */
+    .pdu-list {
+        display: grid;
+        gap: 15px;
+    }
+    
+    .pdu-item {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 10px;
+        padding: 15px 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        transition: all 0.2s ease;
+    }
+    
+    .pdu-item:hover {
+        background: rgba(255, 255, 255, 0.05);
+        border-color: rgba(96, 165, 250, 0.2);
+        transform: translateX(5px);
+    }
+    
+    .pdu-info {
+        flex: 1;
+    }
+    
+    .pdu-id {
+        color: #60a5fa;
+        font-weight: 600;
+        font-size: 1.1rem;
+        margin-bottom: 5px;
+    }
+    
+    .pdu-details {
+        color: #8b92a5;
+        font-size: 0.9rem;
+        display: flex;
+        gap: 15px;
+    }
+    
+    .pdu-detail-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+    }
+    
+    .pdu-actions {
+        display: flex;
+        gap: 10px;
+    }
+    
+    /* ========== NOTES SECTION ========== */
+    .notes-content {
+        background: rgba(255, 255, 255, 0.02);
+        border-left: 3px solid rgba(96, 165, 250, 0.5);
+        border-radius: 6px;
+        padding: 20px;
+        color: #e4e6eb;
+        line-height: 1.6;
+        white-space: pre-wrap;
+    }
+    
+    .no-notes {
+        color: #8b92a5;
+        font-style: italic;
+        text-align: center;
+        padding: 30px;
+    }
+    
+    /* ========== EMPTY STATES ========== */
+    .empty-state {
+        text-align: center;
+        padding: 40px;
+        color: #8b92a5;
+        font-style: italic;
+    }
+    
+    .empty-icon {
+        font-size: 2rem;
+        opacity: 0.5;
+        margin-bottom: 10px;
+    }
+    
+    /* ========== ACTION BUTTONS ========== */
+    .btn-edit {
+        background: rgba(96, 165, 250, 0.2);
+        border: 1px solid rgba(96, 165, 250, 0.3);
+        color: #60a5fa;
+    }
+    
+    .btn-edit:hover {
+        background: rgba(96, 165, 250, 0.3);
+        color: #93bbfc;
+    }
+    
+    .btn-back {
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        color: #e4e6eb;
+    }
+    
+    .btn-back:hover {
+        background: rgba(255, 255, 255, 0.15);
+        color: #ffffff;
+    }
+    
+    .btn-view {
+        background: rgba(16, 185, 129, 0.2);
+        border: 1px solid rgba(16, 185, 129, 0.3);
+        color: #10b981;
+        padding: 6px 12px;
+        border-radius: 6px;
+        text-decoration: none;
+        font-size: 0.9rem;
+        transition: all 0.2s ease;
+    }
+    
+    .btn-view:hover {
+        background: rgba(16, 185, 129, 0.3);
+        color: #34d399;
+        text-decoration: none;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="detail-container">
+    <!-- ========== HEADER BAR ========== -->
+    <div class="rack-header-bar">
+        <div class="rack-header-content">
+            <div class="rack-title-section">
+                <div class="rack-id-display">Rack {{ rack.rack_id }}</div>
+                <div class="rack-location">📍 {{ rack.floor.datacenter.name }} ({{ rack.floor.datacenter.code }})</div>
+                <div class="rack-floor">Floor: {{ rack.floor.provider_designation }} (Actual: {{ rack.floor.actual_floor }})</div>
+            </div>
+            <div class="action-buttons">
+                <a href="{{ url_for('datacenters.edit_rack', rack_id=rack.id) }}" class="btn btn-edit">
+                    <span style="margin-right: 8px;">✏️</span> Edit Rack
+                </a>
+                <a href="{{ url_for('datacenters.index') }}" class="btn btn-back">
+                    <span style="margin-right: 8px;">←</span> Back to Racks
+                </a>
+            </div>
+        </div>
+    </div>
+    
+    <!-- ========== STATS GRID ========== -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-icon">📏</div>
+            <div class="stat-content">
+                <div class="stat-value">{{ rack.u_height }}U</div>
+                <div class="stat-label">Rack Height</div>
+            </div>
+        </div>
+        
+        <div class="stat-card">
+            <div class="stat-icon">📊</div>
+            <div class="stat-content">
+                <div class="stat-value">{{ rack.u_available }}U</div>
+                <div class="stat-label">Available Space</div>
+            </div>
+        </div>
+        
+        <div class="stat-card">
+            <div class="stat-icon">⚡</div>
+            <div class="stat-content">
+                <div class="stat-value">{{ rack.power_used }}/{{ rack.power_capacity }}A</div>
+                <div class="stat-label">Power Usage</div>
+            </div>
+        </div>
+        
+        <div class="stat-card">
+            <div class="stat-icon">🔐</div>
+            <div class="stat-content">
+                <div class="stat-value">{{ rack.rack_code or 'Not Set' }}</div>
+                <div class="stat-label">Access Code</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- ========== BASIC INFORMATION ========== -->
+    <div class="info-card">
+        <div class="info-card-header">
+            <div class="info-card-title">
+                <span>📋</span>
+                <span>Rack Information</span>
+            </div>
+        </div>
+        <div class="info-grid">
+            <div class="info-item">
+                <div class="info-label">Rack Identifier</div>
+                <div class="info-value large mono">{{ rack.rack_id }}</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Total Height</div>
+                <div class="info-value large">{{ rack.u_height }}U</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Location</div>
+                <div class="info-value">
+                    {{ rack.floor.datacenter.name }}<br>
+                    Floor {{ rack.floor.provider_designation }}
+                </div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Power Capacity</div>
+                <div class="info-value">{{ rack.power_capacity }} Amps</div>
+            </div>
+        </div>
+        
+        <!-- Space Utilization Visual - FIXED -->
+        <div class="utilization-visual">
+            <div class="utilization-bar">
+                {% set util_percent = rack.utilization_percent %}
+                {% set util_class = 'utilization-low' if util_percent < 50 else ('utilization-medium' if util_percent < 80 else 'utilization-high') %}
+                <div class="utilization-fill {{ util_class }}" style="width: {{ util_percent }}%">
+                    <span class="utilization-text">{{ util_percent }}% Used</span>
+                </div>
+            </div>
+            <div class="utilization-details">
+                <span>Used: {{ rack.u_used }}U</span>
+                <span>Available: {{ rack.u_available }}U</span>
+                <span>Total: {{ rack.u_height }}U</span>
+            </div>
+        </div>
+    </div>
+    
+    <!-- ========== RACK VISUALIZATION ========== -->
+    <div class="info-card">
+        <div class="info-card-header">
+            <div class="info-card-title">
+                <span>🗄️</span>
+                <span>Rack Layout</span>
+            </div>
+        </div>
+        
+        <div class="rack-visual-container">
+            <!-- Rack Diagram -->
+            <div class="rack-diagram">
+                <div class="rack-diagram-title">Front View - {{ rack.rack_id }}</div>
+                <div class="rack-units">
+                    {% for u in range(1, rack.u_height + 1) %}
+                    <div class="rack-unit">
+                        <div class="rack-unit-number">U{{ u }}</div>
+                        <div class="rack-unit-slot empty" id="u-{{ u }}" title="U{{ u }} - Empty">
+                            <!-- Equipment will be overlaid via JavaScript -->
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                
+                <div class="rack-legend">
+                    <div class="legend-title">Legend</div>
+                    <div class="legend-items">
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: rgba(255, 255, 255, 0.03);"></div>
+                            <span class="legend-label">Empty</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: rgba(59, 130, 246, 0.3);"></div>
+                            <span class="legend-label">Network Device</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: rgba(245, 158, 11, 0.3);"></div>
+                            <span class="legend-label">PDU</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Equipment List - CHANGED: Added clickable links -->
+            <div class="equipment-list">
+                <div class="equipment-list-title">Mounted Equipment</div>
+                {% if rack.network_devices and rack.network_devices|length > 0 %}
+                    {% for device in rack.network_devices|sort(attribute='start_u', reverse=True) %}
+                    <div class="equipment-item" data-start="{{ device.start_u }}" data-size="{{ device.size_u }}" data-device-id="{{ device.id }}">
+                        <a href="{{ url_for('network_devices.device_detail', device_id=device.id) }}" class="equipment-name">{{ device.identifier }}</a>
+                        <div class="equipment-details">
+                            <span>📍 {{ device.rack_position }}</span>
+                            <span>📏 {{ device.size_u }}U</span>
+                            <span>🔌 {{ device.device_type }}</span>
+                            {% if device.management_ip %}
+                            <span>🌐 {{ device.management_ip }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div style="text-align: center; padding: 40px; color: #8b92a5;">
+                        <div style="font-size: 2rem; opacity: 0.5; margin-bottom: 10px;">📦</div>
+                        <div>No equipment mounted yet</div>
+                        <div style="font-size: 0.85rem; margin-top: 5px;">{{ rack.u_available }}U available</div>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <!-- ========== POWER DISTRIBUTION UNITS ========== -->
+    <div class="info-card">
+        <div class="info-card-header">
+            <div class="info-card-title">
+                <span>⚡</span>
+                <span>Power Distribution Units (PDUs)</span>
+            </div>
+        </div>
+        
+        {% if rack.pdus.count() > 0 %}
+        <div class="pdu-list">
+            {% for pdu in rack.pdus %}
+            <div class="pdu-item">
+                <div class="pdu-info">
+                    <div class="pdu-id">{{ pdu.identifier }}</div>
+                    <div class="pdu-details">
+                        <span class="pdu-detail-item">
+                            <span>⚡</span>
+                            <span>{{ pdu.voltage }}V / {{ pdu.capacity_amps }}A</span>
+                        </span>
+                        <span class="pdu-detail-item">
+                            <span>🔌</span>
+                            <span>{{ pdu.used_outlets }}/{{ pdu.total_outlets }} outlets used</span>
+                        </span>
+                        {% if pdu.circuit_id %}
+                        <span class="pdu-detail-item">
+                            <span>📊</span>
+                            <span>Circuit: {{ pdu.circuit_id }}</span>
+                        </span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="pdu-actions">
+                    <a href="{{ url_for('pdus.outlet_view', pdu_id=pdu.id) }}" class="btn-view">
+                        View Details
+                    </a>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-icon">⚡</div>
+            <div>No PDUs configured for this rack</div>
+            <a href="{{ url_for('pdus.add_pdu', rack_id=rack.id) }}" class="btn btn-primary mt-3">
+                <span style="margin-right: 8px;">➕</span> Add PDU
+            </a>
+        </div>
+        {% endif %}
+    </div>
+    
+    <!-- ========== NOTES ========== -->
+    {% if rack.notes %}
+    <div class="info-card">
+        <div class="info-card-header">
+            <div class="info-card-title">
+                <span>📝</span>
+                <span>Notes</span>
+            </div>
+        </div>
+        <div class="notes-content">{{ rack.notes }}</div>
+    </div>
+    {% endif %}
+    
+    <!-- ========== QUICK ACTIONS ========== -->
+    <div class="info-card">
+        <div class="info-card-header">
+            <div class="info-card-title">
+                <span>⚡</span>
+                <span>Quick Actions</span>
+            </div>
+        </div>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <a href="{{ url_for('datacenters.edit_rack', rack_id=rack.id) }}" class="btn btn-primary">
+                <span style="margin-right: 8px;">✏️</span> Edit Rack
+            </a>
+            <a href="{{ url_for('pdus.add_pdu', rack_id=rack.id) }}" class="btn btn-secondary">
+                <span style="margin-right: 8px;">⚡</span> Add PDU
+            </a>
+            <a href="{{ url_for('datacenters.dc_detail', dc_id=rack.floor.datacenter.id) }}" class="btn btn-secondary">
+                <span style="margin-right: 8px;">🏢</span> View Data Center
+            </a>
+            {% if rack.u_used == 0 %}
+            <form method="POST" action="{{ url_for('datacenters.delete_rack', rack_id=rack.id) }}" 
+                  style="display: inline;" 
+                  onsubmit="return confirm('Delete rack {{ rack.rack_id }}? This action cannot be undone.');">
+                <button type="submit" class="btn btn-danger">
+                    <span style="margin-right: 8px;">🗑️</span> Delete Rack
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+    
+    <!-- ========== TIMESTAMPS ========== -->
+    <div class="info-card">
+        <div class="info-card-header">
+            <div class="info-card-title">
+                <span>🕐</span>
+                <span>Record Information</span>
+            </div>
+        </div>
+        <div class="info-grid">
+            <div class="info-item">
+                <div class="info-label">Created</div>
+                <div class="info-value">{{ rack.created_at.strftime('%B %d, %Y at %I:%M %p') if rack.created_at else 'N/A' }}</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Last Updated</div>
+                <div class="info-value">{{ rack.updated_at.strftime('%B %d, %Y at %I:%M %p') if rack.updated_at else 'N/A' }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Populate rack visualization with equipment
+document.addEventListener('DOMContentLoaded', function() {
+    // Get all equipment items
+    const equipmentItems = document.querySelectorAll('.equipment-item');
+    
+    equipmentItems.forEach(item => {
+        const startU = parseInt(item.dataset.start);
+        const sizeU = parseInt(item.dataset.size);
+        const deviceName = item.querySelector('.equipment-name').textContent;
+        
+        // Mark the occupied units
+        for (let u = startU; u < startU + sizeU; u++) {
+            const unitSlot = document.getElementById(`u-${u}`);
+            if (unitSlot) {
+                unitSlot.classList.remove('empty');
+                unitSlot.classList.add('occupied');
+                unitSlot.title = deviceName;
+                
+                // Add label to the first unit of multi-U equipment
+                if (u === startU) {
+                    const label = document.createElement('span');
+                    label.className = 'device-label';
+                    label.textContent = deviceName;
+                    unitSlot.appendChild(label);
+                    
+                    // If it spans multiple units, visually connect them
+                    if (sizeU > 1) {
+                        unitSlot.style.borderBottom = 'none';
+                        unitSlot.style.borderRadius = '2px 2px 0 0';
+                    }
+                } else if (u === startU + sizeU - 1) {
+                    // Last unit of multi-U equipment
+                    unitSlot.style.borderTop = 'none';
+                    unitSlot.style.borderRadius = '0 0 2px 2px';
+                } else {
+                    // Middle units
+                    unitSlot.style.borderTop = 'none';
+                    unitSlot.style.borderBottom = 'none';
+                    unitSlot.style.borderRadius = '0';
+                }
+            }
+        }
+    });
+    
+    // Highlight equipment on hover
+    equipmentItems.forEach(item => {
+        item.addEventListener('mouseenter', function() {
+            const startU = parseInt(this.dataset.start);
+            const sizeU = parseInt(this.dataset.size);
+            
+            for (let u = startU; u < startU + sizeU; u++) {
+                const unitSlot = document.getElementById(`u-${u}`);
+                if (unitSlot) {
+                    unitSlot.style.background = 'linear-gradient(90deg, rgba(96, 165, 250, 0.5), rgba(59, 130, 246, 0.4))';
+                }
+            }
+        });
+        
+        item.addEventListener('mouseleave', function() {
+            const startU = parseInt(this.dataset.start);
+            const sizeU = parseInt(this.dataset.size);
+            
+            for (let u = startU; u < startU + sizeU; u++) {
+                const unitSlot = document.getElementById(`u-${u}`);
+                if (unitSlot) {
+                    unitSlot.style.background = '';
+                }
+            }
+        });
+    });
+});
+</script>
+{% endblock %}
