@@ -1,0 +1,184 @@
+"""
+File: models/switch_port.py
+Purpose: Switch port tracking for complete network topology management
+Version: 1.0.0
+Author: DCMS Team
+Created: 2025-01-14
+
+This model tracks EVERY port on EVERY switch and what's connected to each port.
+Supports device connections, uplinks, LAG/port-channels, and availability tracking.
+"""
+
+from datetime import datetime
+from models.datacenter import db
+
+# ========== PORT TYPE CONSTANTS ==========
+
+PORT_TYPES = [
+    ('access', 'Access Port'),
+    ('trunk', 'Trunk Port'),
+    ('uplink', 'Uplink Port'),
+    ('lag_member', 'LAG Member'),
+    ('disabled', 'Disabled'),
+    ('unused', 'Unused')
+]
+
+PORT_SPEEDS = [
+    ('10', '10 Mbps'),
+    ('100', '100 Mbps'),
+    ('1000', '1 Gbps'),
+    ('10000', '10 Gbps'),
+    ('25000', '25 Gbps'),
+    ('40000', '40 Gbps'),
+    ('100000', '100 Gbps')
+]
+
+PORT_STATUS = [
+    ('active', 'Active'),
+    ('down', 'Down'),
+    ('disabled', 'Administratively Disabled'),
+    ('faulty', 'Faulty'),
+    ('reserved', 'Reserved')
+]
+
+# ========== SWITCH PORT MODEL ==========
+
+class SwitchPort(db.Model):
+    """
+    Tracks individual ports on network devices (switches)
+    Handles all types of connections: devices, uplinks, PDUs, servers (future)
+    """
+    __tablename__ = 'switch_ports'
+    
+    # ========== PRIMARY KEY ==========
+    id = db.Column(db.Integer, primary_key=True)
+    
+    # ========== SWITCH IDENTIFICATION ==========
+    switch_id = db.Column(db.Integer, db.ForeignKey('network_devices.id'), nullable=False)
+    port_number = db.Column(db.Integer, nullable=False)  # 1-48, etc.
+    port_name = db.Column(db.String(50))  # Gi0/1, Eth1/1, etc. (optional)
+    
+    # ========== PORT CONFIGURATION ==========
+    port_type = db.Column(db.String(20), default='access')  # access, trunk, uplink, etc.
+    port_speed = db.Column(db.String(10))  # 1000, 10000, etc.
+    duplex = db.Column(db.String(10), default='full')  # full, half, auto
+    
+    # ========== VLAN CONFIGURATION ==========
+    vlan_mode = db.Column(db.String(20))  # access, trunk
+    access_vlan = db.Column(db.Integer)  # For access ports
+    native_vlan = db.Column(db.Integer)  # For trunk ports
+    allowed_vlans = db.Column(db.String(255))  # Comma-separated list for trunk
+    
+    # ========== WHAT'S CONNECTED (Polymorphic) ==========
+    connected_device_type = db.Column(db.String(50))  # 'network_device', 'pdu', 'server', etc.
+    connected_device_id = db.Column(db.Integer)  # ID of connected device
+    connected_port = db.Column(db.String(50))  # Port on the other end (for documentation)
+    
+    # ========== LAG/PORT-CHANNEL ==========
+    lag_group = db.Column(db.Integer)  # LAG/Port-channel number if part of aggregate
+    lag_mode = db.Column(db.String(20))  # active, passive, on (LACP modes)
+    
+    # ========== STATUS ==========
+    status = db.Column(db.String(20), default='active')
+    link_status = db.Column(db.Boolean, default=True)  # Physical link up/down
+    last_seen_up = db.Column(db.DateTime)  # Last time port was seen active
+    
+    # ========== METADATA ==========
+    description = db.Column(db.String(200))  # Port description/label
+    notes = db.Column(db.Text)
+    
+    # ========== TIMESTAMPS ==========
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # ========== RELATIONSHIPS ==========
+    switch = db.relationship('NetworkDevice', backref='ports', foreign_keys=[switch_id])
+    
+    # ========== UNIQUE CONSTRAINT ==========
+    __table_args__ = (
+        db.UniqueConstraint('switch_id', 'port_number', name='_switch_port_uc'),
+    )
+    
+    # ========== PROPERTIES ==========
+    @property
+    def is_available(self):
+        """Check if port is available for use"""
+        return self.connected_device_type is None and self.status != 'disabled'
+    
+    @property
+    def is_uplink(self):
+        """Check if this is an uplink port"""
+        return self.port_type in ['uplink', 'trunk'] and self.connected_device_type == 'network_device'
+    
+    @property
+    def is_lag_member(self):
+        """Check if port is part of a LAG"""
+        return self.lag_group is not None
+    
+    @property
+    def connected_device_name(self):
+        """Get the name of connected device"""
+        if not self.connected_device_type:
+            return None
+            
+        if self.connected_device_type == 'network_device':
+            from models.network_device import NetworkDevice
+            device = NetworkDevice.query.get(self.connected_device_id)
+            return device.identifier if device else 'Unknown Switch'
+        elif self.connected_device_type == 'pdu':
+            from models.datacenter import PDU
+            pdu = PDU.query.get(self.connected_device_id)
+            return pdu.identifier if pdu else 'Unknown PDU'
+        elif self.connected_device_type == 'server':
+            # Future: when server module is built
+            return f"Server #{self.connected_device_id}"
+        else:
+            return f"{self.connected_device_type} #{self.connected_device_id}"
+    
+    @property
+    def port_label(self):
+        """Get port label for display"""
+        if self.port_name:
+            return f"{self.port_name} (Port {self.port_number})"
+        return f"Port {self.port_number}"
+    
+    def __repr__(self):
+        return f'<SwitchPort {self.switch.identifier}:{self.port_number}>'
+
+
+# ========== HELPER FUNCTIONS ==========
+
+def get_available_ports(switch_id):
+    """Get all available ports on a switch"""
+    return SwitchPort.query.filter_by(
+        switch_id=switch_id,
+        connected_device_type=None,
+        status='active'
+    ).order_by(SwitchPort.port_number).all()
+
+def get_uplink_ports(switch_id):
+    """Get all uplink ports for a switch"""
+    return SwitchPort.query.filter_by(
+        switch_id=switch_id,
+        port_type='uplink'
+    ).all()
+
+def get_lag_members(switch_id, lag_group):
+    """Get all ports in a LAG group"""
+    return SwitchPort.query.filter_by(
+        switch_id=switch_id,
+        lag_group=lag_group
+    ).order_by(SwitchPort.port_number).all()
+
+def create_port_range(switch_id, start_port, end_port, port_type='access'):
+    """Create a range of ports for a switch (used during switch creation)"""
+    ports = []
+    for port_num in range(start_port, end_port + 1):
+        port = SwitchPort(
+            switch_id=switch_id,
+            port_number=port_num,
+            port_type=port_type,
+            status='active'
+        )
+        ports.append(port)
+    return ports
