@@ -1,0 +1,158 @@
+"""
+File: app.py
+Purpose: Main Flask application entry point for DCMS
+Version: 1.3.0
+Author: DCMS Team
+
+Revision History:
+- v1.0.0: Initial Flask app setup with dark theme
+- v1.0.1: Added SQLAlchemy database initialization
+- v1.0.2: Integrated data center blueprint
+- v1.1.0: Added network devices blueprint
+- v1.2.0: Added PDU management and power profiles
+- v1.3.0: Added SwitchPort model for switch port tracking
+"""
+
+from flask import Flask, render_template, jsonify
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
+import os
+
+# ========== APPLICATION INITIALIZATION ==========
+
+# Initialize Flask application
+app = Flask(__name__)
+
+# ========== CONFIGURATION ==========
+
+# Configuration
+app.config['SECRET_KEY'] = 'dev-key-change-this-in-production'
+app.config['DEBUG'] = True
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///dcms.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# ========== DATABASE SETUP ==========
+
+# Initialize database
+from models.datacenter import db
+db.init_app(app)
+
+# ========== BLUEPRINT REGISTRATION ==========
+
+# Register blueprints
+from routes.datacenters import datacenters_bp
+from routes.network_devices import network_devices_bp
+from routes.pdus import pdus_bp
+
+app.register_blueprint(datacenters_bp)
+app.register_blueprint(network_devices_bp)
+app.register_blueprint(pdus_bp)
+
+# Create tables
+with app.app_context():
+    # Import all models to ensure they're registered with SQLAlchemy
+    from models.datacenter import DataCenter, Floor, Rack, PDU
+    from models.network_device import NetworkDevice
+    from models.power_profiles import PowerProfile, init_default_profiles
+    from models.switch_port import SwitchPort  # CHANGED: Added SwitchPort model import
+    
+    db.create_all()
+    
+    # Initialize default power profiles for TCH equipment
+    existing_profiles = PowerProfile.query.count()
+    if existing_profiles == 0:
+        init_default_profiles(db.session)
+        print("Initialized TCH power profiles")
+    
+    # CHANGED: Check if switch ports need to be created for existing switches
+    existing_switches = NetworkDevice.query.filter(
+        NetworkDevice.device_type.in_(['Switch', 'Core'])
+    ).all()
+    
+    for switch in existing_switches:
+        # Check if this switch has any ports defined
+        existing_ports = SwitchPort.query.filter_by(switch_id=switch.id).count()
+        if existing_ports == 0:
+            # Create default ports for this switch
+            port_count = switch.port_count or 48  # Default to 48 if not specified
+            print(f"Creating {port_count} ports for switch {switch.identifier}...")
+            
+            from models.switch_port import create_port_range
+            ports = create_port_range(switch.id, 1, port_count)
+            for port in ports:
+                db.session.add(port)
+            
+            db.session.commit()
+            print(f"Created {port_count} ports for switch {switch.identifier}")
+
+# ========== ROUTE HANDLERS ==========
+
+@app.route('/')
+def index():
+    """Home page - Dashboard"""
+    # Get summary data for dashboard
+    from models.datacenter import DataCenter, Rack, PDU
+    from models.network_device import NetworkDevice
+    
+    dc_count = DataCenter.query.count()
+    rack_count = Rack.query.count()
+    network_device_count = NetworkDevice.query.count()
+    pdu_count = PDU.query.count()
+    
+    # Calculate total IPs (placeholder for now - will be implemented with IPAM module)
+    ip_count = 0
+    
+    return render_template('index.html', 
+                         title='Data Center Management System',
+                         current_date=datetime.now().strftime('%B %d, %Y'),
+                         current_year=datetime.now().year,
+                         dc_count=dc_count,
+                         rack_count=rack_count,
+                         network_device_count=network_device_count,
+                         pdu_count=pdu_count,
+                         ip_count=ip_count)
+
+# ========== API ENDPOINTS ==========
+
+@app.route('/api/stats')
+def api_stats():
+    """API endpoint for dashboard statistics"""
+    from models.datacenter import DataCenter, Rack, PDU
+    from models.network_device import NetworkDevice
+    
+    stats = {
+        'datacenters': DataCenter.query.count(),
+        'racks': Rack.query.count(),
+        'network_devices': NetworkDevice.query.count(),
+        'pdus': PDU.query.count(),
+        'ips': 0  # Will be implemented with IPAM
+    }
+    return jsonify(stats)
+
+# ========== UTILITY ROUTES ==========
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat()
+    })
+
+# ========== ERROR HANDLERS ==========
+
+@app.errorhandler(404)
+def not_found(error):
+    """Handle 404 errors"""
+    return render_template('404.html'), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Handle 500 errors"""
+    db.session.rollback()
+    return render_template('500.html'), 500
+
+# ========== MAIN EXECUTION ==========
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)

@@ -1,0 +1,605 @@
+"""
+File: routes/network_devices.py
+Purpose: Route handlers for network device management
+Version: 1.1.0
+Author: iambilky
+
+Revision History:
+- v1.0.0: Initial creation with CRUD operations for network devices
+- v1.1.0: Added device_detail route for read-only device view
+"""
+
+from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
+from models.network_device import db, NetworkDevice, DEVICE_TYPES, DEVICE_ROLES, NETWORK_TYPES, DEVICE_STATUS
+from models.datacenter import Rack, PDU
+from forms.network_device_forms import NetworkDeviceForm
+from sqlalchemy import and_
+
+# ========== BLUEPRINT INITIALIZATION ==========
+
+network_devices_bp = Blueprint('network_devices', __name__, url_prefix='/network-devices')
+
+# ========== MAIN VIEWS ==========
+
+@network_devices_bp.route('/')
+def index():
+    """
+    Main network device view
+    Shows all network devices organized by type and location
+    """
+    # Get filter parameters
+    network_type = request.args.get('network_type', 'all')
+    device_type = request.args.get('device_type', 'all')
+    rack_id = request.args.get('rack', 'all')
+    
+    # Build query
+    query = NetworkDevice.query
+    
+    if network_type != 'all':
+        query = query.filter_by(network_type=network_type)
+    if device_type != 'all':
+        query = query.filter_by(device_type=device_type)
+    if rack_id != 'all':
+        query = query.filter_by(rack_id=int(rack_id))
+    
+    # Get devices
+    devices = query.order_by(NetworkDevice.identifier).all()
+    
+    # Get all racks for filter dropdown
+    racks = Rack.query.order_by(Rack.rack_id).all()
+    
+    # Calculate summary statistics
+    total_devices = NetworkDevice.query.count()
+    private_count = NetworkDevice.query.filter_by(network_type='private').count()
+    public_count = NetworkDevice.query.filter_by(network_type='public').count()
+    active_count = NetworkDevice.query.filter_by(status='active').count()
+    
+    # Group devices by rack for visualization
+    devices_by_rack = {}
+    for device in devices:
+        if device.rack.rack_id not in devices_by_rack:
+            devices_by_rack[device.rack.rack_id] = []
+        devices_by_rack[device.rack.rack_id].append(device)
+    
+    return render_template('network_devices/index.html',
+                         devices=devices,
+                         devices_by_rack=devices_by_rack,
+                         racks=racks,
+                         total_devices=total_devices,
+                         private_count=private_count,
+                         public_count=public_count,
+                         active_count=active_count,
+                         current_filters={
+                             'network_type': network_type,
+                             'device_type': device_type,
+                             'rack': rack_id
+                         })
+
+@network_devices_bp.route('/device/<int:device_id>')
+def device_detail(device_id):
+    """
+    Display detailed read-only view of a network device
+    Shows device information, location, power, and network details
+    Version: 1.0.0 - Initial implementation keeping it simple
+    """
+    device = NetworkDevice.query.get_or_404(device_id)
+    
+    return render_template('network_devices/device_detail.html', device=device)
+
+@network_devices_bp.route('/switch/<int:device_id>')
+def switch_detail(device_id):
+    """
+    Display detailed switch port view showing what's connected to each port
+    Similar to PDU outlet view but for switch ports
+    Version: 1.0.0 - Initial implementation
+    
+    Shows:
+    - Visual port grid with connection status
+    - Uplink connections
+    - Port utilization stats
+    - Connected devices with clickable links
+    """
+    from models.switch_port import SwitchPort
+    
+    device = NetworkDevice.query.get_or_404(device_id)
+    
+    # Check if this is actually a switch
+    if device.device_type not in ['Switch', 'Core']:
+        flash('This device is not a switch', 'error')
+        return redirect(url_for('network_devices.device_detail', device_id=device_id))
+    
+    # Get or determine total ports
+    total_ports = device.port_count or 48  # Default to 48 if not specified
+    port_split = total_ports // 2  # Split ports in half for display
+    
+    # Try to get port data from SwitchPort model if it exists
+    try:
+        ports = SwitchPort.query.filter_by(switch_id=device_id).order_by(SwitchPort.port_number).all()
+        has_port_data = len(ports) > 0
+    except:
+        # SwitchPort table might not exist yet
+        ports = []
+        has_port_data = False
+    
+    # If no port data exists, create mock data for visualization
+    if not has_port_data:
+        # Create mock port data
+        first_half = []
+        second_half = []
+        
+        for port_num in range(1, total_ports + 1):
+            port_info = {
+                'number': port_num,
+                'device': None,
+                'device_url': None,
+                'device_full_name': None,
+                'status': 'active',
+                'status_class': 'available',
+                'link_status': 'active',
+                'vlan': None,
+                'port_type': 'access'
+            }
+            
+            # Mock some sample connections for demonstration
+            if device.identifier.startswith('INT'):
+                # Private switch - mock some server connections
+                if port_num in [1, 2]:
+                    port_info['device'] = f"CORE{port_num}"
+                    port_info['status_class'] = 'uplink'
+                    port_info['port_type'] = 'uplink'
+                    port_info['device_full_name'] = f"Uplink to Core Switch {port_num}"
+                elif port_num in [5, 10, 15]:
+                    port_info['device'] = f"Server{port_num}"
+                    port_info['status_class'] = 'occupied'
+                    port_info['device_full_name'] = f"Connected Server {port_num}"
+            elif device.identifier.startswith('DISTRO'):
+                # Public switch
+                if port_num in [47, 48]:
+                    port_info['device'] = "CORE"
+                    port_info['status_class'] = 'uplink'
+                    port_info['port_type'] = 'uplink'
+                    port_info['device_full_name'] = "Uplink to Core Router"
+                elif port_num in [3, 7, 11]:
+                    port_info['device'] = f"FW{port_num}"
+                    port_info['status_class'] = 'occupied'
+                    port_info['device_full_name'] = f"Firewall Connection"
+            
+            if port_num <= port_split:
+                first_half.append(port_info)
+            else:
+                second_half.append(port_info)
+    else:
+        # Use real port data from SwitchPort model
+        first_half = []
+        second_half = []
+        
+        # Create port map from database
+        port_map = {p.port_number: p for p in ports}
+        
+        for port_num in range(1, total_ports + 1):
+            port = port_map.get(port_num)
+            
+            port_info = {
+                'number': port_num,
+                'device': None,
+                'device_url': None,
+                'device_full_name': None,
+                'status': 'active',
+                'status_class': 'available',
+                'link_status': 'active' if port and port.link_status else 'down',
+                'vlan': port.access_vlan if port else None,
+                'port_type': port.port_type if port else 'access'
+            }
+            
+            if port:
+                # Set device info
+                if port.connected_device_type:
+                    port_info['device'] = port.connected_device_name
+                    port_info['device_full_name'] = port.connected_device_name
+                    
+                    # Set URL based on device type
+                    if port.connected_device_type == 'network_device':
+                        port_info['device_url'] = url_for('network_devices.switch_detail', 
+                                                         device_id=port.connected_device_id)
+                        port_info['status_class'] = 'uplink' if port.port_type == 'uplink' else 'trunk'
+                    elif port.connected_device_type == 'server':
+                        # Future: link to server detail when available
+                        port_info['status_class'] = 'occupied'
+                    else:
+                        port_info['status_class'] = 'occupied'
+                
+                # Handle disabled ports
+                if port.status == 'disabled':
+                    port_info['status'] = 'disabled'
+                    port_info['status_class'] = 'disabled'
+            
+            if port_num <= port_split:
+                first_half.append(port_info)
+            else:
+                second_half.append(port_info)
+    
+    # Calculate statistics
+    used_ports = sum(1 for p in first_half + second_half if p['device'])
+    first_half_used = sum(1 for p in first_half if p['device'])
+    second_half_used = sum(1 for p in second_half if p['device'])
+    
+    # Get uplinks (ports connecting to other switches)
+    uplinks = []
+    for p in first_half + second_half:
+        if p['port_type'] in ['uplink', 'trunk'] and p['device']:
+            uplinks.append({
+                'port_number': p['number'],
+                'port_name': None,  # Could be added later
+                'connected_device_name': p['device'],
+                'connected_port': None,  # Could be added later
+                'lag_group': None  # Could be added later
+            })
+    
+    uplink_count = len(uplinks)
+    
+    # Get connected devices for detail table
+    connected_devices = []
+    if has_port_data:
+        for port in ports:
+            if port.connected_device_type:
+                port_data = {
+                    'port_number': port.port_number,
+                    'port_name': port.port_name,
+                    'port_type': port.port_type,
+                    'connected_device_name': port.connected_device_name,
+                    'connected_port': port.connected_port,
+                    'device_url': None,
+                    'vlan_mode': port.vlan_mode,
+                    'access_vlan': port.access_vlan,
+                    'native_vlan': port.native_vlan,
+                    'port_speed': port.port_speed,
+                    'link_status': port.link_status,
+                    'description': port.description
+                }
+                
+                # Set device URL
+                if port.connected_device_type == 'network_device':
+                    port_data['device_url'] = url_for('network_devices.switch_detail',
+                                                     device_id=port.connected_device_id)
+                
+                connected_devices.append(port_data)
+    
+    # VLAN count (placeholder - could be calculated from actual data)
+    vlan_count = None  # Will be populated when VLAN tracking is implemented
+    
+    return render_template('network_devices/switch_detail.html',
+                         device=device,
+                         total_ports=total_ports,
+                         port_split=port_split,
+                         first_half=first_half,
+                         second_half=second_half,
+                         used_ports=used_ports,
+                         first_half_used=first_half_used,
+                         second_half_used=second_half_used,
+                         uplinks=uplinks,
+                         uplink_count=uplink_count,
+                         connected_devices=connected_devices,
+                         vlan_count=vlan_count)
+
+# ========== CREATE OPERATIONS ==========
+
+@network_devices_bp.route('/add', methods=['GET', 'POST'])
+def add_device():
+    """Add new network device"""
+    form = NetworkDeviceForm()
+    
+    # Populate rack choices
+    racks = Rack.query.order_by(Rack.rack_id).all()
+    form.rack_id.choices = [(0, '-- Select Rack --')] + [
+        (rack.id, f"{rack.rack_id} ({rack.u_available}U available)") 
+        for rack in racks
+    ]
+    
+    # Populate PDU choices (if PDUs exist)
+    pdus = PDU.query.join(Rack).order_by(Rack.rack_id, PDU.identifier).all()
+    pdu_choices = [(0, '-- No PDU --')] + [
+        (pdu.id, f"{pdu.rack.rack_id} - {pdu.identifier} ({pdu.available_outlets} outlets free)")
+        for pdu in pdus
+    ]
+    form.pdu_1_id.choices = pdu_choices
+    form.pdu_2_id.choices = pdu_choices
+    
+    if form.validate_on_submit():
+        # Check if hostname already exists
+        existing = NetworkDevice.query.filter_by(hostname=form.hostname.data.upper()).first()
+        if existing:
+            flash(f'Device with hostname {form.hostname.data.upper()} already exists!', 'error')
+            return render_template('network_devices/add_device.html', form=form)
+        
+        # Check if rack space is available
+        rack = Rack.query.get(form.rack_id.data)
+        if not validate_rack_space(rack, form.start_u.data, form.size_u.data):
+            flash(f'Rack space U{form.start_u.data}-U{form.start_u.data + form.size_u.data - 1} is not available!', 'error')
+            return render_template('network_devices/add_device.html', form=form)
+        
+        # Create new device
+        device = NetworkDevice(
+            hostname=form.hostname.data.upper(),
+            identifier=form.identifier.data.upper(),
+            device_type=form.device_type.data,
+            device_role=form.device_role.data,
+            network_type=form.network_type.data,
+            manufacturer=form.manufacturer.data,
+            model=form.model.data,
+            serial_number=form.serial_number.data,
+            software_version=form.software_version.data,
+            rack_id=form.rack_id.data,
+            start_u=form.start_u.data,
+            size_u=form.size_u.data,
+            management_ip=form.management_ip.data,
+            port_count=form.port_count.data,
+            pdu_1_id=form.pdu_1_id.data if form.pdu_1_id.data != 0 else None,
+            pdu_1_outlet=form.pdu_1_outlet.data,
+            pdu_2_id=form.pdu_2_id.data if form.pdu_2_id.data != 0 else None,
+            pdu_2_outlet=form.pdu_2_outlet.data,
+            power_consumption=form.power_consumption.data,
+            status=form.status.data,
+            notes=form.notes.data
+        )
+        
+        # Update rack usage
+        rack.u_used += device.size_u
+        
+        # Update PDU outlet usage if configured
+        if device.power_consumption:
+            # Get voltage from PDU if connected, otherwise default to 120V
+            voltage = 120  # Default voltage
+            if device.pdu_1_id:
+                pdu1 = PDU.query.get(device.pdu_1_id)
+                voltage = pdu1.voltage if pdu1 else 120
+            
+            # Convert watts to amps and update rack power
+            power_amps = device.power_consumption / voltage
+            rack.power_used = (rack.power_used or 0) + power_amps
+        
+        db.session.add(device)
+        db.session.commit()
+        
+        flash(f'Network device {device.identifier} added successfully!', 'success')
+        return redirect(url_for('network_devices.index'))
+    
+    return render_template('network_devices/add_device.html', form=form)
+
+# ========== UPDATE OPERATIONS ==========
+
+@network_devices_bp.route('/edit/<int:device_id>', methods=['GET', 'POST'])
+def edit_device(device_id):
+    """Edit network device"""
+    device = NetworkDevice.query.get_or_404(device_id)
+    form = NetworkDeviceForm(obj=device)
+    
+    # Store original values for comparison
+    original_rack_id = device.rack_id
+    original_start_u = device.start_u
+    original_size_u = device.size_u
+    original_pdu_1_id = device.pdu_1_id
+    original_pdu_2_id = device.pdu_2_id
+    original_power_consumption = device.power_consumption
+    
+    # Populate rack choices
+    racks = Rack.query.order_by(Rack.rack_id).all()
+    form.rack_id.choices = [(rack.id, f"{rack.rack_id} ({rack.u_available}U available)") 
+                            for rack in racks]
+    
+    # Populate PDU choices
+    pdus = PDU.query.join(Rack).order_by(Rack.rack_id, PDU.identifier).all()
+    pdu_choices = [(0, '-- No PDU --')] + [
+        (pdu.id, f"{pdu.rack.rack_id} - {pdu.identifier} ({pdu.available_outlets} outlets free)")
+        for pdu in pdus
+    ]
+    form.pdu_1_id.choices = pdu_choices
+    form.pdu_2_id.choices = pdu_choices
+    
+    if form.validate_on_submit():
+        # Check if hostname changed and already exists
+        if form.hostname.data.upper() != device.hostname:
+            existing = NetworkDevice.query.filter_by(hostname=form.hostname.data.upper()).first()
+            if existing:
+                flash(f'Device with hostname {form.hostname.data.upper()} already exists!', 'error')
+                return render_template('network_devices/edit_device.html', form=form, device=device)
+        
+        # Check rack space if position changed
+        if (form.rack_id.data != original_rack_id or 
+            form.start_u.data != original_start_u or 
+            form.size_u.data != original_size_u):
+            
+            rack = Rack.query.get(form.rack_id.data)
+            if not validate_rack_space(rack, form.start_u.data, form.size_u.data, exclude_device_id=device_id):
+                flash(f'Rack space U{form.start_u.data}-U{form.start_u.data + form.size_u.data - 1} is not available!', 'error')
+                return render_template('network_devices/edit_device.html', form=form, device=device)
+            
+        # Update rack usage
+            old_rack = Rack.query.get(original_rack_id)
+            old_rack.u_used -= original_size_u
+            rack.u_used += form.size_u.data
+            
+            # CHANGED: Update power usage when rack changes
+            if original_power_consumption:
+                # Remove power from old rack
+                voltage = 120
+                if original_pdu_1_id:
+                    old_pdu = PDU.query.get(original_pdu_1_id)
+                    voltage = old_pdu.voltage if old_pdu else 120
+                old_power_amps = original_power_consumption / voltage
+                old_rack.power_used = max(0, (old_rack.power_used or 0) - old_power_amps)
+            
+            if form.power_consumption.data:
+                # Add power to new rack
+                voltage = 120
+                if form.pdu_1_id.data:
+                    new_pdu = PDU.query.get(form.pdu_1_id.data)
+                    voltage = new_pdu.voltage if new_pdu else 120
+                new_power_amps = form.power_consumption.data / voltage
+                rack.power_used = (rack.power_used or 0) + new_power_amps
+        
+        # Update PDU outlet usage if changed
+        if form.pdu_1_id.data != original_pdu_1_id:
+            if original_pdu_1_id:
+                old_pdu = PDU.query.get(original_pdu_1_id)
+                old_pdu.used_outlets -= 1
+            if form.pdu_1_id.data and form.pdu_1_id.data != 0:
+                new_pdu = PDU.query.get(form.pdu_1_id.data)
+                new_pdu.used_outlets += 1
+        
+        if form.pdu_2_id.data != original_pdu_2_id:
+            if original_pdu_2_id:
+                old_pdu = PDU.query.get(original_pdu_2_id)
+                old_pdu.used_outlets -= 1
+            if form.pdu_2_id.data and form.pdu_2_id.data != 0:
+                new_pdu = PDU.query.get(form.pdu_2_id.data)
+                new_pdu.used_outlets += 1
+        
+        # Update device
+        device.hostname = form.hostname.data.upper()
+        device.identifier = form.identifier.data.upper()
+        device.device_type = form.device_type.data
+        device.device_role = form.device_role.data
+        device.network_type = form.network_type.data
+        device.manufacturer = form.manufacturer.data
+        device.model = form.model.data
+        device.serial_number = form.serial_number.data
+        device.software_version = form.software_version.data
+        device.rack_id = form.rack_id.data
+        device.start_u = form.start_u.data
+        device.size_u = form.size_u.data
+        device.management_ip = form.management_ip.data
+        device.port_count = form.port_count.data
+        device.pdu_1_id = form.pdu_1_id.data if form.pdu_1_id.data != 0 else None
+        device.pdu_1_outlet = form.pdu_1_outlet.data
+        device.pdu_2_id = form.pdu_2_id.data if form.pdu_2_id.data != 0 else None
+        device.pdu_2_outlet = form.pdu_2_outlet.data
+        device.power_consumption = form.power_consumption.data
+        device.status = form.status.data
+        device.notes = form.notes.data
+
+        if form.power_consumption.data != original_power_consumption and form.rack_id.data == original_rack_id:
+            rack = Rack.query.get(device.rack_id)
+            
+            # Remove old power consumption
+            if original_power_consumption:
+                voltage = 120
+                if original_pdu_1_id:
+                    old_pdu = PDU.query.get(original_pdu_1_id)
+                    voltage = old_pdu.voltage if old_pdu else 120
+                old_power_amps = original_power_consumption / voltage
+                rack.power_used = max(0, (rack.power_used or 0) - old_power_amps)
+            
+            # Add new power consumption
+            if form.power_consumption.data:
+                voltage = 120
+                if device.pdu_1_id:
+                    pdu = PDU.query.get(device.pdu_1_id)
+                    voltage = pdu.voltage if pdu else 120
+                new_power_amps = form.power_consumption.data / voltage
+                rack.power_used = (rack.power_used or 0) + new_power_amps
+
+        db.session.commit()
+        flash(f'Network device {device.identifier} updated!', 'success')
+        return redirect(url_for('network_devices.index'))
+    
+    return render_template('network_devices/edit_device.html', form=form, device=device)
+
+# ========== DELETE OPERATIONS ==========
+
+@network_devices_bp.route('/delete/<int:device_id>', methods=['POST'])
+def delete_device(device_id):
+    """Delete network device"""
+    device = NetworkDevice.query.get_or_404(device_id)
+    
+   # Update rack usage
+    rack = Rack.query.get(device.rack_id)
+    rack.u_used -= device.size_u
+    
+    # CHANGED: Update rack power usage
+    if device.power_consumption:
+        # Get voltage from PDU if connected
+        voltage = 120
+        if device.pdu_1_id:
+            pdu = PDU.query.get(device.pdu_1_id)
+            voltage = pdu.voltage if pdu else 120
+        
+        # Remove power consumption from rack
+        power_amps = device.power_consumption / voltage
+        rack.power_used = max(0, (rack.power_used or 0) - power_amps)
+    
+    # Update PDU outlet usage
+    if device.pdu_1_id:
+        pdu1 = PDU.query.get(device.pdu_1_id)
+        pdu1.used_outlets -= 1
+    if device.pdu_2_id:
+        pdu2 = PDU.query.get(device.pdu_2_id)
+        pdu2.used_outlets -= 1
+    
+    db.session.delete(device)
+    db.session.commit()
+    
+    flash(f'Network device {device.identifier} deleted!', 'success')
+    return redirect(url_for('network_devices.index'))
+
+# ========== API ENDPOINTS ==========
+
+@network_devices_bp.route('/api/check-hostname/<hostname>')
+def check_hostname_exists(hostname):
+    """Check if hostname already exists"""
+    existing = NetworkDevice.query.filter_by(hostname=hostname.upper()).first()
+    return jsonify({'exists': existing is not None})
+
+@network_devices_bp.route('/api/rack-usage/<int:rack_id>')
+def get_rack_usage(rack_id):
+    """Get current rack usage for visualization"""
+    rack = Rack.query.get_or_404(rack_id)
+    devices = NetworkDevice.query.filter_by(rack_id=rack_id).order_by(NetworkDevice.start_u.desc()).all()
+    
+    # Build usage map
+    usage_map = []
+    for device in devices:
+        usage_map.append({
+            'device': device.identifier,
+            'start_u': device.start_u,
+            'end_u': device.start_u + device.size_u - 1,
+            'size': device.size_u,
+            'type': device.device_type,
+            'network': device.network_type
+        })
+    
+    return jsonify({
+        'rack_id': rack.rack_id,
+        'total_u': rack.u_height,
+        'used_u': rack.u_used,
+        'available_u': rack.u_available,
+        'devices': usage_map
+    })
+
+# ========== UTILITY FUNCTIONS ==========
+
+def validate_rack_space(rack, start_u, size_u, exclude_device_id=None):
+    """
+    Validate if rack space is available
+    Returns True if space is available, False otherwise
+    """
+    end_u = start_u + size_u - 1
+    
+    # Check if within rack bounds
+    if start_u < 1 or end_u > rack.u_height:
+        return False
+    
+    # Check for overlapping devices
+    query = NetworkDevice.query.filter(
+        and_(
+            NetworkDevice.rack_id == rack.id,
+            NetworkDevice.start_u < start_u + size_u,
+            NetworkDevice.start_u + NetworkDevice.size_u > start_u
+        )
+    )
+    
+    # Exclude current device when editing
+    if exclude_device_id:
+        query = query.filter(NetworkDevice.id != exclude_device_id)
+    
+    overlapping = query.first()
+    return overlapping is None

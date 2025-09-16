@@ -1,0 +1,722 @@
+<!--
+File: templates/network_devices/switch_detail.html
+Purpose: Switch port management and visualization showing connected devices
+Version: 1.0.0
+Author: DCMS Team
+Created: 2025-01-14
+
+Revision History:
+- v1.0.0: Initial creation based on PDU outlet_view.html design
+         Shows all switch ports and their connections
+         Displays uplinks, devices, and available ports
+         
+IMPORTANT: This template assumes SwitchPort model exists and is populated
+-->
+
+{% extends "base.html" %}
+
+{% block title %}Switch {{ device.identifier }} - Port View{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* ========== CONTAINER & HEADER ========== */
+    .switch-container {
+        width: 100%;
+        padding: 20px;
+    }
+    
+    .switch-header {
+        background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+        border-radius: 12px;
+        padding: 25px;
+        margin-bottom: 25px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    
+    .switch-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+    }
+    
+    .switch-identifier {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #f3f4f6;
+        display: flex;
+        align-items: center;
+        gap: 15px;
+    }
+    
+    .switch-location {
+        color: #94a3b8;
+        font-size: 1.1rem;
+    }
+    
+    .switch-actions {
+        display: flex;
+        gap: 10px;
+    }
+    
+    /* ========== STATS BAR ========== */
+    .stats-bar {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 15px;
+    }
+    
+    .stat-card {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 8px;
+        padding: 15px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        transition: all 0.3s ease;
+    }
+    
+    .stat-card:hover {
+        background: rgba(255, 255, 255, 0.08);
+    }
+    
+    .stat-icon {
+        font-size: 1.5rem;
+    }
+    
+    .stat-info {
+        flex: 1;
+    }
+    
+    .stat-label {
+        font-size: 0.75rem;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    
+    .stat-value {
+        font-size: 1.1rem;
+        color: #f3f4f6;
+        font-weight: 600;
+    }
+    
+    /* ========== PORT SECTIONS ========== */
+    .port-sections {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 25px;
+        margin-top: 25px;
+    }
+    
+    .port-section {
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 12px;
+        padding: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    
+    .section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .section-title {
+        font-size: 1.2rem;
+        font-weight: 600;
+        color: #f3f4f6;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .section-count {
+        background: rgba(96, 165, 250, 0.2);
+        color: #60a5fa;
+        padding: 4px 12px;
+        border-radius: 16px;
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+    
+    /* ========== PORTS GRID ========== */
+    .ports-grid {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 10px;
+    }
+    
+    .port-card {
+        background: rgba(255, 255, 255, 0.05);
+        border: 2px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        padding: 12px;
+        text-align: center;
+        transition: all 0.3s ease;
+        cursor: pointer;
+        position: relative;
+        min-height: 90px;
+    }
+    
+    .port-card:hover {
+        background: rgba(255, 255, 255, 0.08);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
+    
+    /* Port status indicators */
+    .port-card.occupied {
+        background: rgba(16, 185, 129, 0.1);
+        border-color: rgba(16, 185, 129, 0.4);
+    }
+    
+    .port-card.uplink {
+        background: rgba(96, 165, 250, 0.1);
+        border-color: rgba(96, 165, 250, 0.4);
+    }
+    
+    .port-card.trunk {
+        background: rgba(168, 85, 247, 0.1);
+        border-color: rgba(168, 85, 247, 0.4);
+    }
+    
+    .port-card.disabled {
+        background: rgba(107, 114, 128, 0.1);
+        border-color: rgba(107, 114, 128, 0.3);
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
+    
+    .port-card.available {
+        background: rgba(255, 255, 255, 0.02);
+        border-color: rgba(255, 255, 255, 0.08);
+    }
+    
+    .port-number {
+        font-size: 0.75rem;
+        color: #94a3b8;
+        margin-bottom: 4px;
+    }
+    
+    .port-device {
+        font-size: 0.85rem;
+        color: #f3f4f6;
+        font-weight: 600;
+        margin-top: 4px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    
+    .port-status {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+    }
+    
+    .port-status.active {
+        background: #10b981;
+        box-shadow: 0 0 4px rgba(16, 185, 129, 0.5);
+    }
+    
+    .port-status.down {
+        background: #ef4444;
+        box-shadow: 0 0 4px rgba(239, 68, 68, 0.5);
+    }
+    
+    /* ========== UPLINKS SECTION ========== */
+    .uplinks-section {
+        grid-column: 1 / -1;
+        background: rgba(96, 165, 250, 0.05);
+        border: 1px solid rgba(96, 165, 250, 0.2);
+    }
+    
+    .uplink-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 15px;
+    }
+    
+    .uplink-card {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(96, 165, 250, 0.3);
+        border-radius: 8px;
+        padding: 15px;
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        transition: all 0.3s ease;
+    }
+    
+    .uplink-card:hover {
+        background: rgba(96, 165, 250, 0.1);
+        transform: translateY(-1px);
+    }
+    
+    .uplink-icon {
+        font-size: 2rem;
+    }
+    
+    .uplink-info {
+        flex: 1;
+    }
+    
+    .uplink-label {
+        font-size: 0.85rem;
+        color: #94a3b8;
+        margin-bottom: 2px;
+    }
+    
+    .uplink-value {
+        font-size: 1rem;
+        color: #60a5fa;
+        font-weight: 600;
+    }
+    
+    /* ========== CONNECTION DETAILS ========== */
+    .connection-details {
+        grid-column: 1 / -1;
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 12px;
+        padding: 20px;
+        margin-top: 20px;
+    }
+    
+    .connections-table {
+        width: 100%;
+        margin-top: 15px;
+    }
+    
+    .connections-table thead {
+        background: rgba(255, 255, 255, 0.05);
+    }
+    
+    .connections-table th {
+        padding: 12px;
+        text-align: left;
+        color: #94a3b8;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .connections-table td {
+        padding: 12px;
+        color: #e2e8f0;
+        font-size: 0.95rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .connections-table tbody tr:hover {
+        background: rgba(255, 255, 255, 0.03);
+    }
+    
+    /* ========== PORT TYPE BADGES ========== */
+    .port-type-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+    
+    .port-type-badge.access {
+        background: rgba(16, 185, 129, 0.2);
+        color: #10b981;
+    }
+    
+    .port-type-badge.trunk {
+        background: rgba(168, 85, 247, 0.2);
+        color: #a855f7;
+    }
+    
+    .port-type-badge.uplink {
+        background: rgba(96, 165, 250, 0.2);
+        color: #60a5fa;
+    }
+    
+    .port-type-badge.lag {
+        background: rgba(251, 191, 36, 0.2);
+        color: #fbbf24;
+    }
+    
+    /* ========== LEGEND ========== */
+    .legend {
+        display: flex;
+        gap: 20px;
+        margin-top: 20px;
+        padding: 15px;
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    
+    .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.85rem;
+        color: #94a3b8;
+    }
+    
+    .legend-color {
+        width: 20px;
+        height: 20px;
+        border-radius: 4px;
+        border: 2px solid;
+    }
+    
+    /* ========== RESPONSIVE ========== */
+    @media (max-width: 1200px) {
+        .port-sections {
+            grid-template-columns: 1fr;
+        }
+    }
+    
+    @media (max-width: 768px) {
+        .ports-grid {
+            grid-template-columns: repeat(4, 1fr);
+        }
+        
+        .switch-title {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 15px;
+        }
+        
+        .uplink-list {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="switch-container">
+    <!-- ========== SWITCH HEADER ========== -->
+    <div class="switch-header">
+        <div class="switch-title">
+            <div>
+                <div class="switch-identifier">
+                    🔀 {{ device.identifier }}
+                    {% if device.model %}
+                    <span style="font-size: 1rem; color: #94a3b8;">({{ device.model }})</span>
+                    {% endif %}
+                </div>
+                <div class="switch-location">
+                    📍 {{ device.hostname }} | Rack {{ device.rack.rack_id }} | {{ device.rack_position }}
+                    {% if device.network_type == 'private' %}
+                    <span style="color: #10b981; margin-left: 10px;">● Private Network</span>
+                    {% else %}
+                    <span style="color: #60a5fa; margin-left: 10px;">● Public Network</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="switch-actions">
+                <a href="{{ url_for('network_devices.edit_device', device_id=device.id) }}" class="btn btn-primary">
+                    ✏️ Edit Switch
+                </a>
+                <a href="{{ url_for('datacenters.rack_detail', rack_id=device.rack.id) }}" class="btn btn-secondary">
+                    🗄️ View Rack
+                </a>
+            </div>
+        </div>
+        
+        <!-- Stats Bar -->
+        <div class="stats-bar">
+            <div class="stat-card">
+                <div class="stat-icon">🔌</div>
+                <div class="stat-info">
+                    <div class="stat-label">Ports</div>
+                    <div class="stat-value">{{ used_ports }}/{{ device.port_count or total_ports }}</div>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon">🔗</div>
+                <div class="stat-info">
+                    <div class="stat-label">Uplinks</div>
+                    <div class="stat-value">{{ uplink_count }}</div>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon">📊</div>
+                <div class="stat-info">
+                    <div class="stat-label">VLANs</div>
+                    <div class="stat-value">{{ vlan_count or 'N/A' }}</div>
+                </div>
+            </div>
+            
+            {% if device.management_ip %}
+            <div class="stat-card">
+                <div class="stat-icon">🌐</div>
+                <div class="stat-info">
+                    <div class="stat-label">Management IP</div>
+                    <div class="stat-value">
+                        <a href="http://{{ device.management_ip }}" target="_blank" style="color: #60a5fa; text-decoration: none;">
+                            {{ device.management_ip }} →
+                        </a>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+            
+            <div class="stat-card">
+                <div class="stat-icon">⚡</div>
+                <div class="stat-info">
+                    <div class="stat-label">Power</div>
+                    <div class="stat-value">{{ device.power_consumption or 'N/A' }}W</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- ========== UPLINKS SECTION (if any) ========== -->
+    {% if uplinks %}
+    <div class="port-section uplinks-section">
+        <div class="section-header">
+            <div class="section-title">
+                🔗 Uplink Connections
+            </div>
+            <div class="section-count">{{ uplinks|length }}</div>
+        </div>
+        
+        <div class="uplink-list">
+            {% for uplink in uplinks %}
+            <div class="uplink-card">
+                <div class="uplink-icon">
+                    {% if uplink.lag_group %}🔀{% else %}🔗{% endif %}
+                </div>
+                <div class="uplink-info">
+                    <div class="uplink-label">
+                        Port {{ uplink.port_number }}
+                        {% if uplink.port_name %}({{ uplink.port_name }}){% endif %}
+                    </div>
+                    <div class="uplink-value">
+                        → {{ uplink.connected_device_name or 'Unknown' }}
+                        {% if uplink.connected_port %}:{{ uplink.connected_port }}{% endif %}
+                    </div>
+                    {% if uplink.lag_group %}
+                    <div style="font-size: 0.75rem; color: #fbbf24; margin-top: 2px;">
+                        LAG Group {{ uplink.lag_group }}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+    
+    <!-- ========== PORT SECTIONS ========== -->
+    <div class="port-sections">
+        <!-- Ports 1-24 (or half of total) -->
+        <div class="port-section">
+            <div class="section-header">
+                <div class="section-title">
+                    Ports 1-{{ port_split }}
+                </div>
+                <div class="section-count">{{ first_half_used }} used</div>
+            </div>
+            
+            <div class="ports-grid">
+                {% for port in first_half %}
+                <div class="port-card {{ port.status_class }}" 
+                     {% if port.device %}
+                     onclick="{% if port.device_url %}window.location.href='{{ port.device_url }}'{% endif %}"
+                     title="{{ port.device_full_name or port.device }}"
+                     {% endif %}>
+                    <div class="port-status {{ port.link_status }}"></div>
+                    <div class="port-number">Port {{ port.number }}</div>
+                    <div class="port-device">
+                        {% if port.device %}
+                            {{ port.device }}
+                        {% elif port.status == 'disabled' %}
+                            Disabled
+                        {% else %}
+                            Available
+                        {% endif %}
+                    </div>
+                    {% if port.vlan %}
+                    <div style="font-size: 0.7rem; color: #94a3b8; margin-top: 2px;">
+                        VLAN {{ port.vlan }}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <!-- Ports 25-48 (or second half) -->
+        <div class="port-section">
+            <div class="section-header">
+                <div class="section-title">
+                    Ports {{ port_split + 1 }}-{{ total_ports }}
+                </div>
+                <div class="section-count">{{ second_half_used }} used</div>
+            </div>
+            
+            <div class="ports-grid">
+                {% for port in second_half %}
+                <div class="port-card {{ port.status_class }}"
+                     {% if port.device %}
+                     onclick="{% if port.device_url %}window.location.href='{{ port.device_url }}'{% endif %}"
+                     title="{{ port.device_full_name or port.device }}"
+                     {% endif %}>
+                    <div class="port-status {{ port.link_status }}"></div>
+                    <div class="port-number">Port {{ port.number }}</div>
+                    <div class="port-device">
+                        {% if port.device %}
+                            {{ port.device }}
+                        {% elif port.status == 'disabled' %}
+                            Disabled
+                        {% else %}
+                            Available
+                        {% endif %}
+                    </div>
+                    {% if port.vlan %}
+                    <div style="font-size: 0.7rem; color: #94a3b8; margin-top: 2px;">
+                        VLAN {{ port.vlan }}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    
+    <!-- ========== CONNECTION DETAILS TABLE ========== -->
+    {% if connected_devices %}
+    <div class="connection-details">
+        <div class="section-header">
+            <div class="section-title">
+                📋 Port Connections Detail
+            </div>
+        </div>
+        
+        <table class="connections-table">
+            <thead>
+                <tr>
+                    <th>Port</th>
+                    <th>Type</th>
+                    <th>Connected Device</th>
+                    <th>Remote Port</th>
+                    <th>VLAN</th>
+                    <th>Speed</th>
+                    <th>Status</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for port in connected_devices %}
+                <tr>
+                    <td>
+                        <strong>{{ port.port_number }}</strong>
+                        {% if port.port_name %}
+                        <span style="color: #94a3b8; margin-left: 4px;">({{ port.port_name }})</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="port-type-badge {{ port.port_type }}">
+                            {{ port.port_type|upper }}
+                        </span>
+                    </td>
+                    <td>
+                        {% if port.device_url %}
+                        <a href="{{ port.device_url }}" style="color: #60a5fa; text-decoration: none;">
+                            {{ port.connected_device_name }}
+                        </a>
+                        {% else %}
+                        {{ port.connected_device_name }}
+                        {% endif %}
+                    </td>
+                    <td>{{ port.connected_port or '-' }}</td>
+                    <td>
+                        {% if port.vlan_mode == 'access' %}
+                            {{ port.access_vlan or '-' }}
+                        {% elif port.vlan_mode == 'trunk' %}
+                            Native: {{ port.native_vlan or '-' }}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                    <td>{{ port.port_speed or 'Auto' }}</td>
+                    <td>
+                        {% if port.link_status %}
+                        <span style="color: #10b981;">● Up</span>
+                        {% else %}
+                        <span style="color: #ef4444;">● Down</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ port.description or '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    
+    <!-- ========== LEGEND ========== -->
+    <div class="legend">
+        <div class="legend-item">
+            <div class="legend-color" style="background: rgba(16, 185, 129, 0.2); border-color: rgba(16, 185, 129, 0.4);"></div>
+            <span>Access Port (Device Connected)</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: rgba(96, 165, 250, 0.2); border-color: rgba(96, 165, 250, 0.4);"></div>
+            <span>Uplink/Trunk Port</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: rgba(168, 85, 247, 0.2); border-color: rgba(168, 85, 247, 0.4);"></div>
+            <span>Trunk Port (Inter-Switch)</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: rgba(255, 255, 255, 0.02); border-color: rgba(255, 255, 255, 0.08);"></div>
+            <span>Available Port</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: rgba(107, 114, 128, 0.1); border-color: rgba(107, 114, 128, 0.3);"></div>
+            <span>Disabled Port</span>
+        </div>
+    </div>
+</div>
+
+<!-- ========== JAVASCRIPT FOR INTERACTIVITY ========== -->
+<script>
+// Show tooltip on hover for truncated device names
+document.querySelectorAll('.port-card[title]').forEach(card => {
+    card.addEventListener('mouseenter', function(e) {
+        // Could add a custom tooltip here if needed
+    });
+});
+
+// Filter ports by status
+function filterPorts(status) {
+    const allCards = document.querySelectorAll('.port-card');
+    allCards.forEach(card => {
+        if (status === 'all') {
+            card.style.display = 'block';
+        } else if (card.classList.contains(status)) {
+            card.style.display = 'block';
+        } else {
+            card.style.display = 'none';
+        }
+    });
+}
+
+// Export port mapping to CSV
+function exportPortMap() {
+    // Implementation for CSV export
+    console.log('Exporting port map...');
+}
+</script>
+{% endblock %}
