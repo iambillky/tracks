@@ -1,0 +1,1099 @@
+<!--
+File: templates/servers/add.html
+Purpose: Tabbed form interface for adding new servers
+Version: 2.0.0
+Author: DCMS Team
+Date: 2025-01-16
+
+CHANGED v2.0.0: Complete redesign with tabbed interface
+- Tab 1: Server Details (identification, classification, location, service)
+- Tab 2: Network (IPs with add-ons, switch connections)
+- Tab 3: Management (IPMI, Power)
+- Tab 4: Hardware (Phase 2 - disabled)
+- Tab 5: Software (Phase 2 - disabled)
+
+Features:
+- Multiple network connections support
+- Bulk IP assignment via textarea
+- Real-time validation
+- Colocation auto-detection
+-->
+
+{% extends "base.html" %}
+
+{% block title %}Add Server{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* ========== FORM CONTAINER ========== */
+    .form-container {
+        max-width: 1200px;
+        margin: 0 auto;
+    }
+    
+    .form-card {
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 30px;
+    }
+    
+    /* ========== TAB STYLES ========== */
+    .nav-tabs {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .nav-tabs .nav-link {
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 8px 8px 0 0;
+        color: #94a3b8;
+        padding: 12px 20px;
+        margin-right: 5px;
+        transition: all 0.2s ease;
+    }
+    
+    .nav-tabs .nav-link:hover:not(.disabled) {
+        background: rgba(255, 255, 255, 0.05);
+        border-color: rgba(255, 255, 255, 0.1) rgba(255, 255, 255, 0.1) transparent;
+        color: #e4e6eb;
+    }
+    
+    .nav-tabs .nav-link.active {
+        background: rgba(96, 165, 250, 0.1);
+        border-color: rgba(96, 165, 250, 0.3) rgba(96, 165, 250, 0.3) transparent;
+        color: #60a5fa;
+    }
+    
+    .nav-tabs .nav-link.disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+    
+    /* ========== FORM SECTIONS ========== */
+    .form-section {
+        margin-bottom: 35px;
+    }
+    
+    .form-section-title {
+        color: #60a5fa;
+        font-size: 1.1rem;
+        font-weight: 600;
+        margin-bottom: 20px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    /* ========== FORM GROUPS ========== */
+    .form-group {
+        margin-bottom: 25px;
+    }
+    
+    .form-label {
+        display: block;
+        color: #e4e6eb;
+        font-weight: 500;
+        margin-bottom: 8px;
+        font-size: 0.95rem;
+    }
+    
+    .form-label .required {
+        color: #ef4444;
+        margin-left: 3px;
+    }
+    
+    /* ========== FORM CONTROLS ========== */
+    .form-control {
+        width: 100%;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 8px;
+        padding: 10px 14px;
+        color: #fff;
+        font-size: 1rem;
+        transition: all 0.2s ease;
+    }
+    
+    .form-control:focus {
+        outline: none;
+        background: rgba(255, 255, 255, 0.1);
+        border-color: #60a5fa;
+        box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.1);
+    }
+    
+    .form-control::placeholder {
+        color: #6b7280;
+    }
+    
+    select.form-control {
+        cursor: pointer;
+    }
+    
+    textarea.form-control {
+        resize: vertical;
+        min-height: 100px;
+        font-family: 'Courier New', monospace;
+    }
+    
+    /* ========== FORM ROW ========== */
+    .form-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 20px;
+    }
+    
+    /* ========== VALIDATION STATES ========== */
+    .is-invalid {
+        border-color: #ef4444 !important;
+    }
+    
+    .invalid-feedback {
+        display: block;
+        color: #ef4444;
+        font-size: 0.875rem;
+        margin-top: 5px;
+    }
+    
+    .valid-feedback {
+        display: block;
+        color: #10b981;
+        font-size: 0.875rem;
+        margin-top: 5px;
+    }
+    
+    /* ========== HELP TEXT ========== */
+    .form-text {
+        display: block;
+        color: #8b92a5;
+        font-size: 0.875rem;
+        margin-top: 5px;
+    }
+    
+    /* ========== CHECKBOXES ========== */
+    .form-check {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 15px;
+    }
+    
+    .form-check-input {
+        width: 20px;
+        height: 20px;
+        cursor: pointer;
+    }
+    
+    .form-check-label {
+        color: #e4e6eb;
+        cursor: pointer;
+    }
+    
+    /* ========== NETWORK CONNECTION TABLE ========== */
+    .connection-table {
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 8px;
+        padding: 15px;
+        margin-top: 20px;
+    }
+    
+    .connection-row {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr 1fr auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 6px;
+        margin-bottom: 10px;
+    }
+    
+    .connection-row input, .connection-row select {
+        padding: 8px;
+        font-size: 0.9rem;
+    }
+    
+    .btn-remove {
+        background: #ef4444;
+        color: white;
+        border: none;
+        padding: 8px 12px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 0.9rem;
+    }
+    
+    .btn-add-connection {
+        background: rgba(96, 165, 250, 0.2);
+        border: 1px solid #60a5fa;
+        color: #60a5fa;
+        padding: 10px 20px;
+        border-radius: 8px;
+        cursor: pointer;
+        margin-top: 10px;
+    }
+    
+    /* ========== COLOCATION ALERT ========== */
+    .colo-alert {
+        background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(245, 158, 11, 0.05));
+        border: 1px solid rgba(245, 158, 11, 0.3);
+        border-radius: 8px;
+        padding: 15px;
+        margin-bottom: 20px;
+        display: none;
+    }
+    
+    .colo-alert.show {
+        display: block;
+    }
+    
+    .colo-alert-title {
+        color: #f59e0b;
+        font-weight: 600;
+        margin-bottom: 5px;
+    }
+    
+    .colo-alert-text {
+        color: #fbbf24;
+        font-size: 0.9rem;
+    }
+    
+    /* ========== BUTTONS ========== */
+    .button-group {
+        display: flex;
+        gap: 15px;
+        margin-top: 30px;
+    }
+    
+    .btn-primary {
+        background: linear-gradient(135deg, #3b82f6, #2563eb);
+        border: none;
+        padding: 12px 30px;
+        border-radius: 8px;
+        color: white;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+    
+    .btn-primary:hover {
+        background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    }
+    
+    .btn-secondary {
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        padding: 12px 30px;
+        border-radius: 8px;
+        color: #e4e6eb;
+        text-decoration: none;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+    
+    .btn-secondary:hover {
+        background: rgba(255, 255, 255, 0.15);
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Add New Server</h1>
+    <p class="page-subtitle">Complete server registration with network and management configuration</p>
+</div>
+
+<div class="form-container">
+    <form method="POST" action="{{ url_for('servers.add') }}" id="serverForm">
+        {{ form.hidden_tag() }}
+        
+        <div class="form-card">
+            <!-- ========== TAB NAVIGATION ========== -->
+            <ul class="nav nav-tabs" id="serverTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="details-tab" data-bs-toggle="tab" data-bs-target="#details" 
+                            type="button" role="tab" aria-controls="details" aria-selected="true">
+                        <span>📋</span> Server Details
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="network-tab" data-bs-toggle="tab" data-bs-target="#network" 
+                            type="button" role="tab" aria-controls="network" aria-selected="false">
+                        <span>🌐</span> Network
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="management-tab" data-bs-toggle="tab" data-bs-target="#management" 
+                            type="button" role="tab" aria-controls="management" aria-selected="false">
+                        <span>⚙️</span> Management
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link disabled" id="hardware-tab" data-bs-toggle="tab" 
+                            type="button" role="tab">
+                        <span>🔧</span> Hardware <small>(Phase 2)</small>
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link disabled" id="software-tab" data-bs-toggle="tab" 
+                            type="button" role="tab">
+                        <span>💿</span> Software <small>(Phase 2)</small>
+                    </button>
+                </li>
+            </ul>
+            
+            <!-- ========== TAB CONTENT ========== -->
+            <div class="tab-content" id="serverTabContent">
+                
+                <!-- ========== TAB 1: SERVER DETAILS ========== -->
+                <div class="tab-pane fade show active" id="details" role="tabpanel" aria-labelledby="details-tab">
+                    
+                    <!-- Server Identification -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Server Identification</h3>
+                        
+                        <!-- Colocation Alert -->
+                        <div class="colo-alert" id="coloAlert">
+                            <div class="colo-alert-title">⚠️ Colocation Server Detected</div>
+                            <div class="colo-alert-text">
+                                Colocation servers must:
+                                <ul style="margin: 10px 0 0 20px;">
+                                    <li>Be assigned to a customer</li>
+                                    <li>Use 66.x IP address space only</li>
+                                    <li>Be placed in designated colo racks</li>
+                                </ul>
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.server_id_input.id }}" class="form-label">
+                                    Server ID <span class="required">*</span>
+                                </label>
+                                {{ form.server_id_input(class="form-control", onblur="validateServerID()") }}
+                                <small class="form-text">Format: TCH-LAX-D6611 or ColoTCH51456</small>
+                                <div id="serverIdFeedback"></div>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.server_name.id }}" class="form-label">
+                                    Server Name <span class="required">*</span>
+                                </label>
+                                {{ form.server_name(class="form-control") }}
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.hostname.id }}" class="form-label">
+                                    Hostname (FQDN)
+                                </label>
+                                {{ form.hostname(class="form-control") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.whmcs_user_id.id }}" class="form-label">
+                                    WHMCS User ID
+                                </label>
+                                {{ form.whmcs_user_id(class="form-control") }}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Server Classification -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Server Classification</h3>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.equipment_type.id }}" class="form-label">
+                                    Equipment Type <span class="required">*</span>
+                                </label>
+                                {{ form.equipment_type(class="form-control") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.service_type.id }}" class="form-label">
+                                    Service Type <span class="required">*</span>
+                                </label>
+                                {{ form.service_type(class="form-control") }}
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.manufacturer.id }}" class="form-label">
+                                    Manufacturer
+                                </label>
+                                {{ form.manufacturer(class="form-control") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.model.id }}" class="form-label">
+                                    Model
+                                </label>
+                                {{ form.model(class="form-control") }}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Physical Location -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Physical Location</h3>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.datacenter_id.id }}" class="form-label">
+                                    Data Center <span class="required">*</span>
+                                </label>
+                                {{ form.datacenter_id(class="form-control", onchange="loadRacks()") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.rack_id.id }}" class="form-label">
+                                    Rack <span class="required">*</span>
+                                </label>
+                                {{ form.rack_id(class="form-control", onchange="loadPDUs(); checkRackSpace()") }}
+                                <div id="rackSpaceInfo" style="margin-top: 5px;"></div>
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.start_u.id }}" class="form-label">
+                                    Start U Position <span class="required">*</span>
+                                </label>
+                                {{ form.start_u(class="form-control", onchange="checkRackSpace()") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.size_u.id }}" class="form-label">
+                                    Size (U) <span class="required">*</span>
+                                </label>
+                                {{ form.size_u(class="form-control", onchange="checkRackSpace()") }}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Service Details -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Service Details</h3>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.in_service_date.id }}" class="form-label">
+                                    In Service Date
+                                </label>
+                                {{ form.in_service_date(class="form-control", type="date") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.status.id }}" class="form-label">
+                                    Status <span class="required">*</span>
+                                </label>
+                                {{ form.status(class="form-control") }}
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.ssh_port.id }}" class="form-label">
+                                    SSH Port
+                                </label>
+                                {{ form.ssh_port(class="form-control") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.rdp_port.id }}" class="form-label">
+                                    RDP Port
+                                </label>
+                                {{ form.rdp_port(class="form-control") }}
+                            </div>
+                        </div>
+                        
+                        <!-- Status Flags -->
+                        <div class="form-row">
+                            <div class="form-check">
+                                {{ form.is_infrastructure(class="form-check-input") }}
+                                <label for="{{ form.is_infrastructure.id }}" class="form-check-label">
+                                    Infrastructure Server
+                                </label>
+                            </div>
+                            
+                            <div class="form-check">
+                                {{ form.is_managed(class="form-check-input") }}
+                                <label for="{{ form.is_managed.id }}" class="form-check-label">
+                                    Managed Server
+                                </label>
+                            </div>
+                            
+                            <div class="form-check">
+                                {{ form.is_available(class="form-check-input") }}
+                                <label for="{{ form.is_available.id }}" class="form-check-label">
+                                    Available for Allocation
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Customer Assignment (for Colocation) -->
+                    <div class="form-section" id="customerSection" style="display: none;">
+                        <h3 class="form-section-title">Customer Assignment</h3>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.customer_id.id }}" class="form-label">
+                                    Customer <span class="required" id="customerRequired" style="display: none;">*</span>
+                                </label>
+                                {{ form.customer_id(class="form-control") }}
+                                <small class="form-text">Required for colocation servers</small>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Notes -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Notes</h3>
+                        
+                        <div class="form-group">
+                            <label for="{{ form.notes.id }}" class="form-label">
+                                Additional Notes
+                            </label>
+                            {{ form.notes(class="form-control") }}
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- ========== TAB 2: NETWORK ========== -->
+                <div class="tab-pane fade" id="network" role="tabpanel" aria-labelledby="network-tab">
+                    
+                    <!-- IP Address Assignment -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">IP Address Assignment</h3>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.primary_public_ip.id }}" class="form-label">
+                                    Primary Public IP
+                                </label>
+                                {{ form.primary_public_ip(class="form-control", onblur="detectVLAN()") }}
+                                <div id="publicIpWarning"></div>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.primary_vlan_id.id }}" class="form-label">
+                                    Primary VLAN
+                                </label>
+                                {{ form.primary_vlan_id(class="form-control") }}
+                                <small class="form-text">Auto-detected from IP if left blank</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">
+                                    Public IP Add-ons
+                                </label>
+                                <textarea id="publicAddons" class="form-control" rows="5" 
+                                          placeholder="One IP per line:&#10;208.76.80.216&#10;208.76.80.217&#10;208.76.80.218"></textarea>
+                                <small class="form-text">Enter additional public IPs (one per line). Will be validated against IPAM.</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.primary_private_ip.id }}" class="form-label">
+                                    Private IP
+                                </label>
+                                {{ form.primary_private_ip(class="form-control") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">
+                                    Private IP Add-ons
+                                </label>
+                                <textarea id="privateAddons" class="form-control" rows="3" 
+                                          placeholder="One IP per line:&#10;10.10.6.217&#10;10.10.6.218"></textarea>
+                                <small class="form-text">Additional private IPs (one per line)</small>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Switch and Port Details -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Switch and Port Connections</h3>
+                        
+                        <div class="connection-table" id="connectionTable">
+                            <div style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 10px; padding: 10px; color: #94a3b8; font-size: 0.9rem; font-weight: 600;">
+                                <div>Switch</div>
+                                <div>Port</div>
+                                <div>Speed</div>
+                                <div>Type</div>
+                                <div></div>
+                            </div>
+                            
+                            <div id="connectionList">
+                                <!-- Default connection -->
+                                <div class="connection-row" data-index="0">
+                                    <select name="conn_switch_0" class="form-control">
+                                        <option value="">-- Select Switch --</option>
+                                        <!-- Populated via JavaScript -->
+                                    </select>
+                                    <input type="number" name="conn_port_0" class="form-control" placeholder="Port #" min="1" max="52">
+                                    <select name="conn_speed_0" class="form-control">
+                                        <option value="1G">1G</option>
+                                        <option value="10G">10G</option>
+                                        <option value="25G">25G</option>
+                                        <option value="40G">40G</option>
+                                        <option value="100G">100G</option>
+                                    </select>
+                                    <select name="conn_type_0" class="form-control">
+                                        <option value="public">Public</option>
+                                        <option value="private">Private</option>
+                                        <option value="ipmi">IPMI</option>
+                                    </select>
+                                    <button type="button" class="btn-remove" onclick="removeConnection(0)" style="display: none;">Remove</button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <button type="button" class="btn-add-connection" onclick="addConnection()">
+                            + Add Another Connection
+                        </button>
+                        <small class="form-text" style="margin-top: 10px; display: block;">
+                            Add all network connections (e.g., 1 port on DISTRO1, 4 ports on INT105)
+                        </small>
+                    </div>
+                </div>
+                
+                <!-- ========== TAB 3: MANAGEMENT ========== -->
+                <div class="tab-pane fade" id="management" role="tabpanel" aria-labelledby="management-tab">
+                    
+                    <!-- IPMI Configuration -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">IPMI / Out-of-Band Management</h3>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.ipmi_ip.id }}" class="form-label">
+                                    IPMI IP Address
+                                </label>
+                                {{ form.ipmi_ip(class="form-control") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.ipmi_type.id }}" class="form-label">
+                                    IPMI Type
+                                </label>
+                                {{ form.ipmi_type(class="form-control") }}
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.ipmi_username.id }}" class="form-label">
+                                    IPMI Username
+                                </label>
+                                {{ form.ipmi_username(class="form-control") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.ipmi_password.id }}" class="form-label">
+                                    IPMI Password
+                                </label>
+                                {{ form.ipmi_password(class="form-control") }}
+                                <small class="form-text">Will be encrypted</small>
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.ipmi_mac_address.id }}" class="form-label">
+                                    IPMI MAC Address
+                                </label>
+                                {{ form.ipmi_mac_address(class="form-control", placeholder="XX:XX:XX:XX:XX:XX") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.ipmi_web_port.id }}" class="form-label">
+                                    IPMI Web Port
+                                </label>
+                                {{ form.ipmi_web_port(class="form-control") }}
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="{{ form.ipmi_notes.id }}" class="form-label">
+                                IPMI Notes
+                            </label>
+                            {{ form.ipmi_notes(class="form-control", rows="3") }}
+                        </div>
+                    </div>
+                    
+                    <!-- Power Management -->
+                    <div class="form-section">
+                        <h3 class="form-section-title">Power Management</h3>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.pdu_1_id.id }}" class="form-label">
+                                    Primary PDU
+                                </label>
+                                {{ form.pdu_1_id(class="form-control") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.pdu_1_outlet.id }}" class="form-label">
+                                    Primary Outlet
+                                </label>
+                                {{ form.pdu_1_outlet(class="form-control") }}
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.pdu_2_id.id }}" class="form-label">
+                                    Redundant PDU
+                                </label>
+                                {{ form.pdu_2_id(class="form-control") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.pdu_2_outlet.id }}" class="form-label">
+                                    Redundant Outlet
+                                </label>
+                                {{ form.pdu_2_outlet(class="form-control") }}
+                            </div>
+                        </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="{{ form.power_draw_watts.id }}" class="form-label">
+                                    Power Draw (Watts)
+                                </label>
+                                {{ form.power_draw_watts(class="form-control") }}
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="{{ form.power_supply_config.id }}" class="form-label">
+                                    Power Supply Config
+                                </label>
+                                {{ form.power_supply_config(class="form-control") }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- ========== TAB 4: HARDWARE (DISABLED) ========== -->
+                <div class="tab-pane fade" id="hardware" role="tabpanel">
+                    <div style="text-align: center; padding: 60px 20px; color: #6b7280;">
+                        <h3>Hardware Information</h3>
+                        <p>Coming in Phase 2</p>
+                    </div>
+                </div>
+                
+                <!-- ========== TAB 5: SOFTWARE (DISABLED) ========== -->
+                <div class="tab-pane fade" id="software" role="tabpanel">
+                    <div style="text-align: center; padding: 60px 20px; color: #6b7280;">
+                        <h3>Software Stack</h3>
+                        <p>Coming in Phase 2</p>
+                    </div>
+                </div>
+                
+            </div>
+            
+            <!-- ========== FORM BUTTONS ========== -->
+            <div class="button-group">
+                <button type="submit" class="btn btn-primary">
+                    <span style="margin-right: 5px;">✔️</span> Create Server
+                </button>
+                <a href="{{ url_for('servers.index') }}" class="btn btn-secondary">
+                    Cancel
+                </a>
+            </div>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Connection counter for unique naming
+let connectionIndex = 1;
+
+// Validate Server ID format and check for colocation
+function validateServerID() {
+    const input = document.getElementById('{{ form.server_id_input.id }}');
+    const value = input.value.toUpperCase();
+    const feedback = document.getElementById('serverIdFeedback');
+    const coloAlert = document.getElementById('coloAlert');
+    const customerSection = document.getElementById('customerSection');
+    const customerRequired = document.getElementById('customerRequired');
+    const publicIpWarning = document.getElementById('publicIpWarning');
+    
+    if (!value) {
+        feedback.innerHTML = '';
+        coloAlert.classList.remove('show');
+        return;
+    }
+    
+    // Check if colocation
+    if (value.startsWith('COLO')) {
+        // Show colocation alert and customer section
+        coloAlert.classList.add('show');
+        customerSection.style.display = 'block';
+        customerRequired.style.display = 'inline';
+        
+        // Validate colocation format
+        if (/^COLO(TCH)?\d+$/.test(value)) {
+            feedback.innerHTML = '<div class="valid-feedback">✓ Valid colocation server ID</div>';
+            input.classList.remove('is-invalid');
+            
+            // Add warning for IP
+            if (publicIpWarning) {
+                publicIpWarning.innerHTML = '<div style="color: #f59e0b; margin-top: 5px;">⚠️ Colocation servers must use 66.x IP space</div>';
+            }
+        } else {
+            feedback.innerHTML = '<div class="invalid-feedback">Format must be: ColoTCH##### or Colo#####</div>';
+            input.classList.add('is-invalid');
+        }
+    } else {
+        // Hide colocation stuff
+        coloAlert.classList.remove('show');
+        customerSection.style.display = 'none';
+        customerRequired.style.display = 'none';
+        if (publicIpWarning) publicIpWarning.innerHTML = '';
+        
+        // Validate dedicated format
+        if (/^[A-Z]{3}-[A-Z]{3}-[A-Z]\d+$/.test(value)) {
+            feedback.innerHTML = '<div class="valid-feedback">✓ Valid server ID format</div>';
+            input.classList.remove('is-invalid');
+        } else {
+            feedback.innerHTML = '<div class="invalid-feedback">Format must be: DC-LOC-Type#### (e.g., TCH-LAX-D6611)</div>';
+            input.classList.add('is-invalid');
+        }
+    }
+    
+    // Check uniqueness via API
+    fetch(`/servers/api/validate-server-id?server_id=${value}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.exists) {
+                feedback.innerHTML += '<div class="invalid-feedback">This Server ID already exists!</div>';
+                input.classList.add('is-invalid');
+            }
+        })
+        .catch(err => console.error('Error validating server ID:', err));
+}
+
+// Load racks when datacenter changes
+function loadRacks() {
+    const dcSelect = document.getElementById('{{ form.datacenter_id.id }}');
+    const rackSelect = document.getElementById('{{ form.rack_id.id }}');
+    
+    if (!dcSelect.value || dcSelect.value === '0') {
+        rackSelect.innerHTML = '<option value="0">-- Select Data Center First --</option>';
+        return;
+    }
+    
+    fetch(`/api/racks/${dcSelect.value}`)
+        .then(response => response.json())
+        .then(racks => {
+            rackSelect.innerHTML = '<option value="0">-- Select Rack --</option>';
+            racks.forEach(rack => {
+                const option = new Option(rack.rack_id, rack.id);
+                rackSelect.add(option);
+            });
+        })
+        .catch(err => console.error('Error loading racks:', err));
+}
+
+// Load PDUs when rack changes
+function loadPDUs() {
+    // This would load PDUs for the selected rack
+    // Currently handled server-side
+}
+
+// Check rack space availability
+function checkRackSpace() {
+    const rackId = document.getElementById('{{ form.rack_id.id }}').value;
+    const startU = document.getElementById('{{ form.start_u.id }}').value;
+    const sizeU = document.getElementById('{{ form.size_u.id }}').value;
+    const info = document.getElementById('rackSpaceInfo');
+    
+    if (!rackId || rackId === '0' || !startU || !sizeU) {
+        info.innerHTML = '';
+        return;
+    }
+    
+    fetch(`/servers/api/rack/${rackId}/availability`)
+        .then(response => response.json())
+        .then(data => {
+            const endU = parseInt(startU) + parseInt(sizeU) - 1;
+            
+            // Check if space is available
+            let available = true;
+            for (let u = startU; u <= endU; u++) {
+                if (data.usage[u]) {
+                    available = false;
+                    info.innerHTML = `<span style="color: #ef4444;">❌ Conflict with ${data.usage[u].server_id} at U${u}</span>`;
+                    break;
+                }
+            }
+            
+            if (available) {
+                info.innerHTML = `<span style="color: #10b981;">✓ Space available (U${startU}-U${endU})</span>`;
+            }
+        })
+        .catch(err => {
+            console.error('Error checking rack space:', err);
+            info.innerHTML = '';
+        });
+}
+
+// Auto-detect VLAN from IP
+function detectVLAN() {
+    const ipInput = document.getElementById('{{ form.primary_public_ip.id }}');
+    const ip = ipInput.value;
+    
+    if (!ip) return;
+    
+    // Check if colocation server with non-66.x IP
+    const serverId = document.getElementById('{{ form.server_id_input.id }}').value.toUpperCase();
+    if (serverId.startsWith('COLO') && !ip.startsWith('66.')) {
+        ipInput.classList.add('is-invalid');
+        const warning = document.getElementById('publicIpWarning');
+        if (warning) {
+            warning.innerHTML = '<div class="invalid-feedback">Colocation servers must use 66.x IP space!</div>';
+        }
+    } else {
+        ipInput.classList.remove('is-invalid');
+    }
+    
+    // Here you would call an API to detect VLAN from IP
+    // For now, this is a placeholder
+}
+
+// Add network connection row
+function addConnection() {
+    const connectionList = document.getElementById('connectionList');
+    const newRow = document.createElement('div');
+    newRow.className = 'connection-row';
+    newRow.dataset.index = connectionIndex;
+    
+    newRow.innerHTML = `
+        <select name="conn_switch_${connectionIndex}" class="form-control">
+            <option value="">-- Select Switch --</option>
+            <!-- Will be populated -->
+        </select>
+        <input type="number" name="conn_port_${connectionIndex}" class="form-control" placeholder="Port #" min="1" max="52">
+        <select name="conn_speed_${connectionIndex}" class="form-control">
+            <option value="1G">1G</option>
+            <option value="10G">10G</option>
+            <option value="25G">25G</option>
+            <option value="40G">40G</option>
+            <option value="100G">100G</option>
+        </select>
+        <select name="conn_type_${connectionIndex}" class="form-control">
+            <option value="public">Public</option>
+            <option value="private">Private</option>
+            <option value="ipmi">IPMI</option>
+        </select>
+        <button type="button" class="btn-remove" onclick="removeConnection(${connectionIndex})">Remove</button>
+    `;
+    
+    connectionList.appendChild(newRow);
+    loadSwitches(connectionIndex);
+    connectionIndex++;
+    
+    // Show remove button on first row if we have multiple
+    if (connectionList.children.length > 1) {
+        connectionList.children[0].querySelector('.btn-remove').style.display = 'block';
+    }
+}
+
+// Remove network connection row
+function removeConnection(index) {
+    const row = document.querySelector(`[data-index="${index}"]`);
+    if (row) {
+        row.remove();
+    }
+    
+    // Hide remove button on first row if only one left
+    const connectionList = document.getElementById('connectionList');
+    if (connectionList.children.length === 1) {
+        connectionList.children[0].querySelector('.btn-remove').style.display = 'none';
+    }
+}
+
+// Load switches for connection dropdown
+function loadSwitches(index = 0) {
+    // This would fetch available switches
+    // For now, using placeholder data
+    const switchSelect = document.querySelector(`select[name="conn_switch_${index}"]`);
+    if (switchSelect) {
+        // This would be populated from an API call
+        switchSelect.innerHTML = `
+            <option value="">-- Select Switch --</option>
+            <option value="1">DISTRO1</option>
+            <option value="2">INT5</option>
+            <option value="3">INT105</option>
+            <option value="4">CORE1</option>
+        `;
+    }
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    // Load initial switches for first connection
+    loadSwitches(0);
+    
+    // Check if editing and server is colocation
+    validateServerID();
+});
+
+// Form submission handler to include dynamic connections
+document.getElementById('serverForm').addEventListener('submit', function(e) {
+    // Collect network connections
+    const connections = [];
+    document.querySelectorAll('.connection-row').forEach(row => {
+        const index = row.dataset.index;
+        const switchId = document.querySelector(`select[name="conn_switch_${index}"]`).value;
+        const port = document.querySelector(`input[name="conn_port_${index}"]`).value;
+        const speed = document.querySelector(`select[name="conn_speed_${index}"]`).value;
+        const type = document.querySelector(`select[name="conn_type_${index}"]`).value;
+        
+        if (switchId && port) {
+            connections.push({ switchId, port, speed, type });
+        }
+    });
+    
+    // Add connections as hidden field
+    const connectionsInput = document.createElement('input');
+    connectionsInput.type = 'hidden';
+    connectionsInput.name = 'network_connections';
+    connectionsInput.value = JSON.stringify(connections);
+    this.appendChild(connectionsInput);
+    
+    // Collect add-on IPs
+    const publicAddons = document.getElementById('publicAddons').value.trim();
+    const privateAddons = document.getElementById('privateAddons').value.trim();
+    
+    if (publicAddons) {
+        const publicInput = document.createElement('input');
+        publicInput.type = 'hidden';
+        publicInput.name = 'public_addon_ips';
+        publicInput.value = publicAddons;
+        this.appendChild(publicInput);
+    }
+    
+    if (privateAddons) {
+        const privateInput = document.createElement('input');
+        privateInput.type = 'hidden';
+        privateInput.name = 'private_addon_ips';
+        privateInput.value = privateAddons;
+        this.appendChild(privateInput);
+    }
+});
+</script>
+{% endblock %}

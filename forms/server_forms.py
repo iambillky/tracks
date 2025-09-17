@@ -1,0 +1,544 @@
+"""
+File: forms/server_forms.py
+Purpose: WTForms for server management in DCMS
+Version: 1.0.0
+Author: DCMS Team
+Date: 2025-01-16
+
+Forms for complete server management including:
+- Basic server CRUD operations
+- IP assignment with IPAM integration
+- Network connection management
+- IPMI configuration
+- Power management
+- Customer assignment
+
+Revision History:
+- v1.0.0: Initial creation with comprehensive server management forms
+         Includes validation for colocation IP rules, rack space, and PDU outlets
+"""
+
+from flask_wtf import FlaskForm
+from wtforms import (StringField, IntegerField, SelectField, TextAreaField, 
+                    BooleanField, DateField, HiddenField, FieldList, FormField,
+                    FloatField, PasswordField)
+from wtforms.validators import (DataRequired, Optional, Length, NumberRange, 
+                               ValidationError, IPAddress, Email, Regexp)
+from models.server import (EQUIPMENT_TYPES, SERVICE_TYPES, MANUFACTURERS, 
+                          SERVER_STATUS, IPMI_TYPES, POWER_CONFIGS)
+import re
+
+# ========== CUSTOM VALIDATORS ==========
+
+def validate_server_id_format(form, field):
+    """Validate server ID follows correct format"""
+    if field.data:
+        value = field.data.upper()
+        
+        # Check for colocation prefix
+        if value.startswith('COLO'):
+            # Colocation servers must follow pattern
+            if not re.match(r'^COLO(TCH)?\d+$', value):
+                raise ValidationError("Colocation server ID must be format: ColoTCH##### or Colo#####")
+        else:
+            # Dedicated servers should follow pattern
+            if not re.match(r'^[A-Z]{3}-[A-Z]{3}-[A-Z]\d+$', value):
+                raise ValidationError("Server ID must be format: DC-LOC-Type#### (e.g., TCH-LAX-D6611)")
+
+def validate_unique_server_id(form, field):
+    """Validate server ID is unique"""
+    if field.data:
+        from models.server import Server
+        
+        # Check if we're editing
+        existing = Server.query.filter_by(server_id=field.data.upper()).first()
+        
+        if hasattr(form, 'original_server_id') and form.original_server_id.data:
+            # Editing - allow same ID for this server
+            if existing and existing.server_id != form.original_server_id.data:
+                raise ValidationError(f'Server ID {field.data} already exists')
+        else:
+            # New server - must be unique
+            if existing:
+                raise ValidationError(f'Server ID {field.data} already exists')
+
+def validate_rack_position(form, field):
+    """Validate rack position doesn't overlap with existing servers"""
+    if field.data and form.rack_id.data and form.size_u.data:
+        from models.server import Server
+        from models.datacenter import Rack
+        
+        # Check rack bounds
+        rack = Rack.query.get(form.rack_id.data)
+        if rack:
+            if field.data < 1 or field.data > rack.u_height:
+                raise ValidationError(f'Position must be between 1 and {rack.u_height}')
+            
+            # Check for overlaps with other servers
+            end_u = field.data + form.size_u.data - 1
+            
+            query = Server.query.filter(
+                Server.rack_id == form.rack_id.data,
+                Server.start_u <= end_u,
+                Server.start_u + Server.size_u > field.data
+            )
+            
+            # If editing, exclude current server
+            if hasattr(form, 'server_id') and form.server_id.data:
+                current_server = Server.query.get(form.server_id.data)
+                if current_server:
+                    query = query.filter(Server.id != current_server.id)
+            
+            conflicts = query.all()
+            if conflicts:
+                conflict_list = ', '.join([s.server_id for s in conflicts])
+                raise ValidationError(f'Position conflicts with: {conflict_list}')
+
+def validate_pdu_outlet(form, field):
+    """Validate PDU outlet is available"""
+    if field.data:
+        from models.server import Server
+        
+        # Determine which PDU we're checking
+        if field.name == 'pdu_1_outlet':
+            pdu_id = form.pdu_1_id.data
+            pdu_field = 'pdu_1'
+        else:
+            pdu_id = form.pdu_2_id.data
+            pdu_field = 'pdu_2'
+        
+        if pdu_id:
+            # Check if outlet is already used
+            query = Server.query.filter(
+                ((Server.pdu_1_id == pdu_id) & (Server.pdu_1_outlet == field.data)) |
+                ((Server.pdu_2_id == pdu_id) & (Server.pdu_2_outlet == field.data))
+            )
+            
+            # If editing, exclude current server
+            if hasattr(form, 'server_id') and form.server_id.data:
+                current_server = Server.query.get(form.server_id.data)
+                if current_server:
+                    query = query.filter(Server.id != current_server.id)
+            
+            conflict = query.first()
+            if conflict:
+                raise ValidationError(f'Outlet {field.data} already used by {conflict.server_id}')
+
+def validate_redundant_pdu(form, field):
+    """Ensure redundant PDU is different from primary"""
+    if field.data and form.pdu_1_id.data:
+        if field.data == form.pdu_1_id.data:
+            raise ValidationError('Redundant PDU must be different from primary PDU')
+
+def validate_colocation_ip(form, field):
+    """Validate colocation servers only use 66.x IP space"""
+    if field.data and form.server_id.data:
+        if form.server_id.data.upper().startswith('COLO'):
+            if not field.data.startswith('66.'):
+                raise ValidationError('Colocation servers must use 66.x IP space')
+
+def validate_mac_address(form, field):
+    """Validate MAC address format"""
+    if field.data:
+        mac_pattern = r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$'
+        if not re.match(mac_pattern, field.data):
+            raise ValidationError('Invalid MAC address format (XX:XX:XX:XX:XX:XX)')
+
+# ========== MAIN SERVER FORM ==========
+
+class ServerForm(FlaskForm):
+    """
+    Comprehensive form for creating/editing servers
+    Includes all fields from the Server model with proper validation
+    """
+    
+    # Hidden field for editing
+    server_id = HiddenField('Server ID')
+    original_server_id = HiddenField('Original Server ID')
+    
+    # ========== IDENTIFICATION ==========
+    server_id_input = StringField('Server ID',
+                                 validators=[DataRequired(), Length(max=50),
+                                           validate_server_id_format,
+                                           validate_unique_server_id],
+                                 render_kw={'placeholder': 'TCH-LAX-D6611 or ColoTCH51456',
+                                          'style': 'text-transform: uppercase;'})
+    
+    server_name = StringField('Server Name',
+                            validators=[DataRequired(), Length(max=100)],
+                            render_kw={'placeholder': 'Friendly name for this server'})
+    
+    hostname = StringField('Hostname (FQDN)',
+                         validators=[Optional(), Length(max=255)],
+                         render_kw={'placeholder': 'server.example.com'})
+    
+    whmcs_user_id = StringField('WHMCS User ID',
+                               validators=[Optional(), Length(max=50)],
+                               render_kw={'placeholder': 'Ded_6611'})
+    
+    # ========== CLASSIFICATION ==========
+    equipment_type = SelectField('Equipment Type',
+                                choices=EQUIPMENT_TYPES,
+                                validators=[DataRequired()])
+    
+    service_type = SelectField('Service Type',
+                             choices=SERVICE_TYPES,
+                             validators=[DataRequired()])
+    
+    manufacturer = SelectField('Manufacturer',
+                             choices=MANUFACTURERS,
+                             validators=[Optional()])
+    
+    model = StringField('Model',
+                      validators=[Optional(), Length(max=100)],
+                      render_kw={'placeholder': 'R420, DL380, etc.'})
+    
+    # ========== PHYSICAL LOCATION ==========
+    datacenter_id = SelectField('Data Center',
+                               coerce=int,
+                               validators=[DataRequired()])
+    
+    rack_id = SelectField('Rack',
+                        coerce=int,
+                        validators=[DataRequired()])
+    
+    start_u = IntegerField('Start U Position',
+                         validators=[DataRequired(), NumberRange(min=1, max=50),
+                                   validate_rack_position],
+                         render_kw={'placeholder': '1-42'})
+    
+    size_u = IntegerField('Size (U)',
+                        validators=[DataRequired(), NumberRange(min=1, max=8)],
+                        default=1)
+    
+    # ========== PRIMARY IP ADDRESSES ==========
+    primary_public_ip = StringField('Primary Public IP',
+                                   validators=[Optional(), IPAddress(),
+                                             validate_colocation_ip],
+                                   render_kw={'placeholder': '208.76.80.215'})
+    
+    primary_private_ip = StringField('Primary Private IP',
+                                    validators=[Optional(), IPAddress()],
+                                    render_kw={'placeholder': '10.10.6.215'})
+    
+    primary_vlan_id = SelectField('Primary VLAN',
+                                 coerce=int,
+                                 validators=[Optional()])
+    
+    # ========== IPMI CONFIGURATION ==========
+    ipmi_ip = StringField('IPMI IP Address',
+                        validators=[Optional(), IPAddress()],
+                        render_kw={'placeholder': '10.10.4.216'})
+    
+    ipmi_type = SelectField('IPMI Type',
+                          choices=[('', '-- Select --')] + IPMI_TYPES,
+                          validators=[Optional()])
+    
+    ipmi_version = StringField('IPMI Version',
+                             validators=[Optional(), Length(max=50)],
+                             render_kw={'placeholder': 'Enterprise, Express, etc.'})
+    
+    ipmi_username = StringField('IPMI Username',
+                               validators=[Optional(), Length(max=50)],
+                               render_kw={'placeholder': 'root or ADMIN'})
+    
+    ipmi_password = PasswordField('IPMI Password',
+                                validators=[Optional(), Length(max=255)])
+    
+    ipmi_mac_address = StringField('IPMI MAC Address',
+                                  validators=[Optional(), validate_mac_address],
+                                  render_kw={'placeholder': 'XX:XX:XX:XX:XX:XX'})
+    
+    ipmi_web_port = IntegerField('IPMI Web Port',
+                                validators=[Optional(), NumberRange(min=1, max=65535)],
+                                default=443)
+    
+    ipmi_notes = TextAreaField('IPMI Notes',
+                             validators=[Optional()],
+                             render_kw={'rows': 3})
+    
+    # ========== POWER MANAGEMENT ==========
+    pdu_1_id = SelectField('Primary PDU',
+                         coerce=int,
+                         validators=[Optional()])
+    
+    pdu_1_outlet = IntegerField('Primary Outlet',
+                              validators=[Optional(), NumberRange(min=1, max=48),
+                                        validate_pdu_outlet])
+    
+    pdu_2_id = SelectField('Redundant PDU',
+                         coerce=int,
+                         validators=[Optional(), validate_redundant_pdu])
+    
+    pdu_2_outlet = IntegerField('Redundant Outlet',
+                              validators=[Optional(), NumberRange(min=1, max=48),
+                                        validate_pdu_outlet])
+    
+    power_draw_watts = IntegerField('Power Draw (Watts)',
+                                   validators=[Optional(), NumberRange(min=0, max=5000)])
+    
+    power_supply_config = SelectField('Power Supply Config',
+                                    choices=[('', '-- Select --')] + POWER_CONFIGS,
+                                    validators=[Optional()])
+    
+    # ========== CUSTOMER ASSIGNMENT ==========
+    customer_id = SelectField('Customer (for Colocation)',
+                            coerce=int,
+                            validators=[Optional()])
+    
+    # ========== SERVICE DETAILS ==========
+    ssh_port = IntegerField('SSH Port',
+                          validators=[Optional(), NumberRange(min=1, max=65535)],
+                          default=22)
+    
+    rdp_port = IntegerField('RDP Port',
+                          validators=[Optional(), NumberRange(min=1, max=65535)],
+                          default=3389)
+    
+    in_service_date = DateField('In Service Date',
+                               validators=[Optional()],
+                               format='%Y-%m-%d')
+    
+    decommission_date = DateField('Decommission Date',
+                                 validators=[Optional()],
+                                 format='%Y-%m-%d')
+    
+    # ========== STATUS FLAGS ==========
+    status = SelectField('Status',
+                       choices=SERVER_STATUS,
+                       validators=[DataRequired()],
+                       default='provisioning')
+    
+    is_infrastructure = BooleanField('Infrastructure Server')
+    is_managed = BooleanField('Managed Server')
+    is_available = BooleanField('Available for Allocation')
+    
+    # ========== NOTES ==========
+    notes = TextAreaField('Notes',
+                        validators=[Optional()],
+                        render_kw={'rows': 4})
+    
+    def validate(self):
+        """Custom validation logic"""
+        if not super().validate():
+            return False
+        
+        # Additional cross-field validation
+        
+        # If colocation server, must have customer
+        if self.server_id_input.data and self.server_id_input.data.upper().startswith('COLO'):
+            if not self.customer_id.data:
+                self.customer_id.errors.append('Colocation servers must be assigned to a customer')
+                return False
+        
+        # If redundant PDU specified, outlet is required
+        if self.pdu_2_id.data and not self.pdu_2_outlet.data:
+            self.pdu_2_outlet.errors.append('Outlet required when PDU is selected')
+            return False
+        
+        return True
+
+
+# ========== NETWORK CONNECTION FORM ==========
+
+class NetworkConnectionForm(FlaskForm):
+    """
+    Form for managing server network connections
+    Supports multiple connections per server
+    """
+    connection_id = HiddenField('Connection ID')
+    
+    connection_name = StringField('Connection Name',
+                                validators=[Optional(), Length(max=50)],
+                                render_kw={'placeholder': 'Public-1, Private-Bond0, IPMI'})
+    
+    connection_type = SelectField('Connection Type',
+                                choices=[
+                                    ('public', 'Public Network'),
+                                    ('private', 'Private Network'),
+                                    ('management', 'Management Network'),
+                                    ('ipmi', 'IPMI/Out-of-Band'),
+                                    ('storage', 'Storage Network'),
+                                    ('backup', 'Backup Network')
+                                ],
+                                validators=[DataRequired()])
+    
+    switch_id = SelectField('Switch',
+                          coerce=int,
+                          validators=[DataRequired()])
+    
+    switch_port = IntegerField('Switch Port',
+                             validators=[DataRequired(), NumberRange(min=1, max=52)])
+    
+    port_speed = SelectField('Port Speed',
+                           choices=[
+                               ('1G', '1 Gigabit'),
+                               ('10G', '10 Gigabit'),
+                               ('25G', '25 Gigabit'),
+                               ('40G', '40 Gigabit'),
+                               ('100G', '100 Gigabit')
+                           ],
+                           validators=[DataRequired()])
+    
+    native_vlan_id = SelectField('VLAN',
+                                coerce=int,
+                                validators=[Optional()])
+    
+    mac_address = StringField('MAC Address',
+                            validators=[Optional(), validate_mac_address],
+                            render_kw={'placeholder': 'XX:XX:XX:XX:XX:XX'})
+    
+    bond_group = StringField('Bond Group',
+                           validators=[Optional(), Length(max=20)],
+                           render_kw={'placeholder': 'bond0, lacp1, team0'})
+    
+    bond_mode = SelectField('Bond Mode',
+                          choices=[
+                              ('', '-- Not Bonded --'),
+                              ('active-backup', 'Active-Backup'),
+                              ('802.3ad', '802.3ad (LACP)'),
+                              ('balance-rr', 'Balance Round-Robin'),
+                              ('balance-xor', 'Balance XOR'),
+                              ('broadcast', 'Broadcast')
+                          ],
+                          validators=[Optional()])
+    
+    is_bond_primary = BooleanField('Primary Bond Member')
+    
+    link_status = SelectField('Link Status',
+                            choices=[
+                                ('active', 'Active'),
+                                ('down', 'Down'),
+                                ('standby', 'Standby')
+                            ],
+                            default='active')
+    
+    is_enabled = BooleanField('Enabled', default=True)
+    
+    notes = TextAreaField('Notes',
+                        validators=[Optional()],
+                        render_kw={'rows': 2})
+
+
+# ========== IP ASSIGNMENT FORM ==========
+
+class IPAssignmentForm(FlaskForm):
+    """
+    Form for assigning additional IPs to servers
+    Used for add-on IPs beyond primary
+    """
+    ip_addresses = TextAreaField('IP Addresses',
+                                validators=[DataRequired()],
+                                render_kw={'rows': 5,
+                                         'placeholder': 'One IP per line\n208.76.80.216\n208.76.80.217'})
+    
+    assignment_type = SelectField('Assignment Type',
+                                choices=[
+                                    ('addon_public', 'Add-on Public IPs'),
+                                    ('addon_private', 'Add-on Private IPs'),
+                                    ('virtual', 'Virtual IPs (VIPs)')
+                                ],
+                                validators=[DataRequired()])
+    
+    notes = TextAreaField('Assignment Notes',
+                        validators=[Optional()],
+                        render_kw={'rows': 2})
+    
+    def validate_ip_addresses(form, field):
+        """Validate all IPs are valid and available"""
+        if field.data:
+            from models.ipam import IPAddress as IPAddressModel
+            
+            lines = field.data.strip().split('\n')
+            for line in lines:
+                ip = line.strip()
+                if not ip:
+                    continue
+                
+                # Validate IP format
+                import ipaddress
+                try:
+                    ipaddress.ip_address(ip)
+                except ValueError:
+                    raise ValidationError(f'{ip} is not a valid IP address')
+                
+                # Check if IP is available
+                existing = IPAddressModel.query.filter_by(ip_address=ip).first()
+                if existing and existing.is_assigned:
+                    raise ValidationError(f'{ip} is already assigned to {existing.assigned_device_name}')
+
+
+# ========== CUSTOMER FORM ==========
+
+class CustomerForm(FlaskForm):
+    """
+    Form for managing colocation customers
+    """
+    customer_id = HiddenField('Customer ID')
+    
+    customer_name = StringField('Customer Name',
+                              validators=[DataRequired(), Length(max=100)],
+                              render_kw={'placeholder': 'ABC Corporation'})
+    
+    customer_code = StringField('Customer Code',
+                              validators=[Optional(), Length(max=20)],
+                              render_kw={'placeholder': 'TCH51456'})
+    
+    contact_name = StringField('Contact Name',
+                             validators=[Optional(), Length(max=100)])
+    
+    contact_email = StringField('Contact Email',
+                              validators=[Optional(), Email(), Length(max=100)])
+    
+    contact_phone = StringField('Contact Phone',
+                              validators=[Optional(), Length(max=20)])
+    
+    whmcs_id = StringField('WHMCS ID',
+                         validators=[Optional(), Length(max=50)])
+    
+    billing_status = SelectField('Billing Status',
+                               choices=[
+                                   ('active', 'Active'),
+                                   ('suspended', 'Suspended'),
+                                   ('cancelled', 'Cancelled')
+                               ],
+                               default='active')
+    
+    notes = TextAreaField('Notes',
+                        validators=[Optional()],
+                        render_kw={'rows': 3})
+
+
+# ========== SEARCH/FILTER FORM ==========
+
+class ServerSearchForm(FlaskForm):
+    """
+    Form for searching and filtering servers
+    """
+    search = StringField('Search',
+                       validators=[Optional()],
+                       render_kw={'placeholder': 'Server ID, Name, IP, Customer...'})
+    
+    service_type = SelectField('Service Type',
+                             choices=[('all', 'All Types')] + SERVICE_TYPES,
+                             default='all')
+    
+    status = SelectField('Status',
+                       choices=[('all', 'All Statuses')] + SERVER_STATUS,
+                       default='all')
+    
+    datacenter_id = SelectField('Data Center',
+                              choices=[('all', 'All DCs')],
+                              default='all')
+    
+    customer_id = SelectField('Customer',
+                            choices=[('all', 'All Customers')],
+                            default='all')
+    
+    has_ipmi = SelectField('IPMI',
+                         choices=[
+                             ('all', 'All'),
+                             ('yes', 'Has IPMI'),
+                             ('no', 'No IPMI')
+                         ],
+                         default='all')

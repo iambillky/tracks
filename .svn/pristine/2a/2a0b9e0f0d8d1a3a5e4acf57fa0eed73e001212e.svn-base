@@ -1,0 +1,549 @@
+"""
+File: models/server.py
+Purpose: Server management model for DCMS
+Version: 1.0.0
+Author: DCMS Team
+Date: 2025-01-16
+
+This is the core Server model implementing the "Modified All In" approach.
+Includes complete tracking for servers with IP management, network connections,
+IPMI, and power - replacing the broken legacy system where everything was a "server".
+
+Revision History:
+- v1.0.0: Initial creation with complete server tracking
+         Fixes legacy system issues: proper equipment typing, complete IP tracking,
+         multiple network connections, IPMI management
+"""
+
+from datetime import datetime
+from models.datacenter import db
+from sqlalchemy import UniqueConstraint, CheckConstraint
+from sqlalchemy.orm import validates
+import re
+
+# ========== CONSTANTS ==========
+
+EQUIPMENT_TYPES = [
+    ('physical_server', 'Physical Server'),
+    ('blade_server', 'Blade Server'),
+    ('virtual_machine', 'Virtual Machine'),
+]
+
+SERVICE_TYPES = [
+    ('dedicated', 'Dedicated'),
+    ('shared', 'Shared'),
+    ('vps', 'VPS'),
+    ('colocation', 'Colocation'),
+    ('staff', 'Staff/Internal'),
+    ('infrastructure', 'Infrastructure')
+]
+
+MANUFACTURERS = [
+    ('Dell', 'Dell'),
+    ('HP', 'HP/HPE'),
+    ('Supermicro', 'Supermicro'),
+    ('IBM', 'IBM/Lenovo'),
+    ('Cisco', 'Cisco UCS'),
+    ('Custom', 'Custom Build'),
+    ('Other', 'Other')
+]
+
+SERVER_STATUS = [
+    ('active', 'Active'),
+    ('maintenance', 'Maintenance'),
+    ('provisioning', 'Provisioning'),
+    ('decommissioned', 'Decommissioned'),
+    ('failed', 'Failed'),
+    ('reserved', 'Reserved')
+]
+
+IPMI_TYPES = [
+    ('idrac7', 'iDRAC 7'),
+    ('idrac8', 'iDRAC 8'),
+    ('idrac9', 'iDRAC 9'),
+    ('ilo4', 'iLO 4'),
+    ('ilo5', 'iLO 5'),
+    ('ipmi2', 'IPMI 2.0'),
+    ('aspeed', 'ASPEED BMC'),
+    ('none', 'None')
+]
+
+POWER_CONFIGS = [
+    ('single_450', 'Single 450W'),
+    ('single_550', 'Single 550W'),
+    ('single_750', 'Single 750W'),
+    ('redundant_450', 'Redundant 450W'),
+    ('redundant_550', 'Redundant 550W'),
+    ('redundant_750', 'Redundant 750W'),
+    ('redundant_1100', 'Redundant 1100W'),
+    ('custom', 'Custom Configuration')
+]
+
+# ========== ASSOCIATION TABLES ==========
+
+# Many-to-many for add-on IPs
+server_ip_assignments = db.Table('server_ip_assignments',
+    db.Column('server_id', db.Integer, db.ForeignKey('servers.id'), primary_key=True),
+    db.Column('ip_address_id', db.Integer, db.ForeignKey('ip_addresses.id'), primary_key=True),
+    db.Column('assignment_type', db.String(20)),  # 'addon_public', 'addon_private', 'virtual'
+    db.Column('assigned_at', db.DateTime, default=datetime.utcnow),
+    db.Column('notes', db.Text)
+)
+
+# ========== SERVER MODEL ==========
+
+class Server(db.Model):
+    """
+    Core Server model
+    Properly tracks servers as distinct from network equipment and PDUs
+    Solves legacy system problems: complete IP tracking, proper typing, multiple connections
+    """
+    __tablename__ = 'servers'
+    
+    # ========== PRIMARY KEY ==========
+    id = db.Column(db.Integer, primary_key=True)
+    
+    # ========== IDENTIFICATION ==========
+    server_id = db.Column(db.String(50), unique=True, nullable=False, index=True)
+    # Format: TCH-LAX-D6611 for dedicated, ColoTCH51456 for colocation
+    
+    server_name = db.Column(db.String(100), nullable=False)  # Friendly name
+    hostname = db.Column(db.String(255))  # FQDN like server.example.com
+    
+    # ========== BILLING INTEGRATION ==========
+    whmcs_user_id = db.Column(db.String(50))  # Links to WHMCS billing
+    
+    # ========== CLASSIFICATION (Fixing the mixed type problem) ==========
+    equipment_type = db.Column(db.String(20), nullable=False, default='physical_server')
+    service_type = db.Column(db.String(20), nullable=False)
+    manufacturer = db.Column(db.String(50))
+    model = db.Column(db.String(100))  # Dell R420, HP DL380, etc.
+    
+    # ========== PHYSICAL LOCATION ==========
+    datacenter_id = db.Column(db.Integer, db.ForeignKey('datacenters.id'), nullable=False)
+    rack_id = db.Column(db.Integer, db.ForeignKey('racks.id'), nullable=False)
+    start_u = db.Column(db.Integer, nullable=False)
+    size_u = db.Column(db.Integer, nullable=False, default=1)
+    
+    # Ensure no overlapping rack positions
+    __table_args__ = (
+        UniqueConstraint('rack_id', 'start_u', name='_rack_position_uc'),
+        CheckConstraint('start_u > 0', name='_positive_start_u'),
+        CheckConstraint('size_u > 0 AND size_u <= 8', name='_valid_size_u'),
+    )
+    
+    # ========== PRIMARY IP ADDRESSES (Foreign Keys to IPAM) ==========
+    primary_public_ip_id = db.Column(db.Integer, db.ForeignKey('ip_addresses.id'))
+    primary_private_ip_id = db.Column(db.Integer, db.ForeignKey('ip_addresses.id'))
+    ipmi_ip_id = db.Column(db.Integer, db.ForeignKey('ip_addresses.id'))
+    
+    # ========== ADD-ON IPs (Many-to-Many - THE MISSING PIECE!) ==========
+    addon_ips = db.relationship('IPAddress', 
+                                secondary=server_ip_assignments,
+                                backref='assigned_servers',
+                                lazy='dynamic')
+    
+    # ========== VLAN ASSIGNMENT ==========
+    primary_vlan_id = db.Column(db.Integer, db.ForeignKey('vlans.id'))
+    # Auto-populated from IP selection, enforced for colocation
+    
+    # ========== IPMI/OUT-OF-BAND MANAGEMENT ==========
+    ipmi_type = db.Column(db.String(20))
+    ipmi_version = db.Column(db.String(50))  # Enterprise, Express, etc.
+    ipmi_username = db.Column(db.String(50))
+    ipmi_password_encrypted = db.Column(db.String(255))  # Must be encrypted!
+    ipmi_mac_address = db.Column(db.String(17))
+    ipmi_web_port = db.Column(db.Integer, default=443)
+    ipmi_license_key = db.Column(db.String(100))
+    ipmi_license_expires = db.Column(db.Date)
+    ipmi_notes = db.Column(db.Text)
+    
+    # ========== POWER MANAGEMENT ==========
+    pdu_1_id = db.Column(db.Integer, db.ForeignKey('pdus.id'))
+    pdu_1_outlet = db.Column(db.Integer)
+    pdu_2_id = db.Column(db.Integer, db.ForeignKey('pdus.id'))
+    pdu_2_outlet = db.Column(db.Integer)
+    
+    power_draw_watts = db.Column(db.Integer)  # Actual consumption
+    power_supply_config = db.Column(db.String(20))
+    
+    # ========== CUSTOMER ASSIGNMENT (For Colocation) ==========
+    customer_id = db.Column(db.Integer, db.ForeignKey('customers.id'))
+    
+    # ========== SERVICE DETAILS ==========
+    ssh_port = db.Column(db.Integer, default=22)
+    rdp_port = db.Column(db.Integer, default=3389)
+    in_service_date = db.Column(db.Date)
+    decommission_date = db.Column(db.Date)
+    
+    # ========== STATUS FLAGS ==========
+    status = db.Column(db.String(20), nullable=False, default='provisioning')
+    is_infrastructure = db.Column(db.Boolean, default=False)
+    is_managed = db.Column(db.Boolean, default=False)
+    is_available = db.Column(db.Boolean, default=False)
+    
+    # ========== METADATA ==========
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_by = db.Column(db.String(50))  # Username who created
+    updated_by = db.Column(db.String(50))  # Username who last updated
+    
+    # ========== RELATIONSHIPS ==========
+    datacenter = db.relationship('DataCenter', backref='servers')
+    rack = db.relationship('Rack', backref='servers')
+    primary_public_ip = db.relationship('IPAddress', foreign_keys=[primary_public_ip_id], 
+                                       post_update=True)
+    primary_private_ip = db.relationship('IPAddress', foreign_keys=[primary_private_ip_id],
+                                        post_update=True)
+    ipmi_ip = db.relationship('IPAddress', foreign_keys=[ipmi_ip_id],
+                            post_update=True)
+    primary_vlan = db.relationship('VLAN', backref='servers')
+    pdu_1 = db.relationship('PDU', foreign_keys=[pdu_1_id], post_update=True)
+    pdu_2 = db.relationship('PDU', foreign_keys=[pdu_2_id], post_update=True)
+    customer = db.relationship('Customer', backref='servers')
+    
+    # Network connections will be in ServerNetworkConnection
+    network_connections = db.relationship('ServerNetworkConnection', 
+                                         backref='server',
+                                         lazy='dynamic',
+                                         cascade='all, delete-orphan')
+    
+    # ========== VALIDATIONS ==========
+    
+    @validates('server_id')
+    def validate_server_id(self, key, value):
+        """Validate server ID format"""
+        if not value:
+            raise ValueError("Server ID is required")
+        
+        # Check for colocation prefix
+        if value.upper().startswith('COLO'):
+            # Colocation servers must follow pattern
+            if not re.match(r'^Colo(TCH)?\d+$', value, re.IGNORECASE):
+                raise ValueError("Colocation server ID must be format: ColoTCH##### or Colo#####")
+        else:
+            # Dedicated servers should follow pattern
+            if not re.match(r'^[A-Z]{3}-[A-Z]{3}-[A-Z]\d+$', value.upper()):
+                raise ValueError("Server ID must be format: DC-LOC-Type#### (e.g., TCH-LAX-D6611)")
+        
+        return value.upper()
+    
+    @validates('start_u')
+    def validate_rack_position(self, key, value):
+        """Validate rack position is within rack bounds"""
+        if self.rack_id:
+            rack = Rack.query.get(self.rack_id)
+            if rack and (value < 1 or value > rack.u_height):
+                raise ValueError(f"Start U must be between 1 and {rack.u_height}")
+        return value
+    
+    @validates('pdu_1_outlet', 'pdu_2_outlet')
+    def validate_outlet(self, key, value):
+        """Validate outlet number is reasonable"""
+        if value and (value < 1 or value > 48):
+            raise ValueError("Outlet must be between 1 and 48")
+        return value
+    
+    @validates('ipmi_mac_address')
+    def validate_mac(self, key, value):
+        """Validate MAC address format"""
+        if value:
+            # Accept formats: XX:XX:XX:XX:XX:XX or XX-XX-XX-XX-XX-XX
+            mac_pattern = r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$'
+            if not re.match(mac_pattern, value):
+                raise ValueError("Invalid MAC address format")
+            # Normalize to uppercase with colons
+            value = value.upper().replace('-', ':')
+        return value
+    
+    # ========== PROPERTIES ==========
+    
+    @property
+    def is_colocation(self):
+        """Check if this is a colocation server"""
+        return self.server_id.upper().startswith('COLO')
+    
+    @property
+    def rack_position(self):
+        """Get rack position as string"""
+        if self.rack:
+            return f"{self.rack.rack_id} U{self.start_u}-{self.start_u + self.size_u - 1}"
+        return None
+    
+    @property
+    def power_redundant(self):
+        """Check if power is redundant"""
+        return bool(self.pdu_1_id and self.pdu_2_id and self.pdu_1_id != self.pdu_2_id)
+    
+    @property
+    def total_ip_count(self):
+        """Get total number of IPs assigned"""
+        count = 0
+        if self.primary_public_ip_id:
+            count += 1
+        if self.primary_private_ip_id:
+            count += 1
+        if self.ipmi_ip_id:
+            count += 1
+        count += self.addon_ips.count()
+        return count
+    
+    @property
+    def public_ip_list(self):
+        """Get all public IPs as a list"""
+        ips = []
+        if self.primary_public_ip and self.primary_public_ip.network_type == 'public':
+            ips.append(self.primary_public_ip.ip_address)
+        for ip in self.addon_ips:
+            if ip.network_type == 'public':
+                ips.append(ip.ip_address)
+        return ips
+    
+    @property
+    def private_ip_list(self):
+        """Get all private IPs as a list"""
+        ips = []
+        if self.primary_private_ip and self.primary_private_ip.network_type == 'private':
+            ips.append(self.primary_private_ip.ip_address)
+        for ip in self.addon_ips:
+            if ip.network_type == 'private':
+                ips.append(ip.ip_address)
+        return ips
+    
+    @property
+    def public_connections(self):
+        """Get all public network connections"""
+        return self.network_connections.filter_by(connection_type='public').all()
+    
+    @property
+    def private_connections(self):
+        """Get all private network connections"""
+        return self.network_connections.filter_by(connection_type='private').all()
+    
+    @property
+    def ipmi_connection(self):
+        """Get IPMI/management connection"""
+        return self.network_connections.filter_by(connection_type='ipmi').first()
+    
+    @property
+    def total_bandwidth(self):
+        """Calculate total available bandwidth in Gbps"""
+        speed_map = {'1G': 1, '10G': 10, '25G': 25, '40G': 40, '100G': 100}
+        total = 0
+        for conn in self.network_connections.filter_by(link_status='active'):
+            total += speed_map.get(conn.port_speed, 0)
+        return total
+    
+    # ========== METHODS ==========
+    
+    def validate_ip_assignment(self, ip_address):
+        """
+        Validate an IP can be assigned to this server
+        Enforces colocation servers must use 66.x space
+        """
+        from models.ipam import IPAddress
+        
+        # Check if IP is already assigned elsewhere
+        ip_obj = IPAddress.query.filter_by(ip_address=ip_address).first()
+        if ip_obj and ip_obj.assigned_to_id and ip_obj.assigned_to_id != self.id:
+            raise ValueError(f"IP {ip_address} is already assigned")
+        
+        # Colocation servers MUST use 66.x space
+        if self.is_colocation:
+            if not ip_address.startswith('66.'):
+                raise ValueError("Colocation servers must use 66.x IP space")
+        
+        return True
+    
+    def check_rack_space_available(self):
+        """Check if the rack space for this server is available"""
+        if not self.rack_id or not self.start_u:
+            return True  # Can't check without location
+        
+        # Get all other servers in the same rack
+        other_servers = Server.query.filter(
+            Server.rack_id == self.rack_id,
+            Server.id != self.id
+        ).all()
+        
+        # Check for overlaps
+        my_end = self.start_u + self.size_u - 1
+        for other in other_servers:
+            other_end = other.start_u + other.size_u - 1
+            # Check if ranges overlap
+            if (self.start_u <= other.start_u <= my_end) or \
+               (self.start_u <= other_end <= my_end) or \
+               (other.start_u <= self.start_u <= other_end):
+                raise ValueError(f"Rack space conflict with {other.server_id} at U{other.start_u}")
+        
+        return True
+    
+    def __repr__(self):
+        return f'<Server {self.server_id}: {self.server_name}>'
+    
+    def to_dict(self):
+        """Convert to dictionary for API responses"""
+        return {
+            'id': self.id,
+            'server_id': self.server_id,
+            'server_name': self.server_name,
+            'hostname': self.hostname,
+            'equipment_type': self.equipment_type,
+            'service_type': self.service_type,
+            'manufacturer': self.manufacturer,
+            'model': self.model,
+            'datacenter': self.datacenter.code if self.datacenter else None,
+            'rack': self.rack.rack_id if self.rack else None,
+            'rack_position': self.rack_position,
+            'status': self.status,
+            'primary_public_ip': self.primary_public_ip.ip_address if self.primary_public_ip else None,
+            'primary_private_ip': self.primary_private_ip.ip_address if self.primary_private_ip else None,
+            'ipmi_ip': self.ipmi_ip.ip_address if self.ipmi_ip else None,
+            'total_ips': self.total_ip_count,
+            'customer': self.customer.customer_name if self.customer else None,
+            'is_colocation': self.is_colocation,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+# ========== SERVER NETWORK CONNECTION MODEL ==========
+
+class ServerNetworkConnection(db.Model):
+    """
+    Tracks ALL network connections for a server
+    A server can have unlimited connections across multiple switches
+    Solves the legacy system limitation of only one public and one private connection
+    """
+    __tablename__ = 'server_network_connections'
+    
+    # ========== PRIMARY KEY ==========
+    id = db.Column(db.Integer, primary_key=True)
+    
+    # ========== LINK TO SERVER ==========
+    server_id = db.Column(db.Integer, db.ForeignKey('servers.id'), nullable=False)
+    
+    # ========== CONNECTION DETAILS ==========
+    connection_name = db.Column(db.String(50))  # "Public-1", "Private-Bond0", "IPMI"
+    connection_type = db.Column(db.String(20), nullable=False)  
+    # Options: 'public', 'private', 'management', 'ipmi', 'storage', 'backup'
+    
+    # ========== SWITCH CONNECTION ==========
+    switch_id = db.Column(db.Integer, db.ForeignKey('network_devices.id'), nullable=False)
+    switch_port_id = db.Column(db.Integer, db.ForeignKey('switch_ports.id'), nullable=False)
+    
+    # ========== CONNECTION PROPERTIES ==========
+    port_speed = db.Column(db.String(10))  # "1G", "10G", "25G", "40G", "100G"
+    port_mode = db.Column(db.String(20), default='access')  # 'access', 'trunk', 'hybrid'
+    
+    # ========== VLAN ASSIGNMENTS ==========
+    native_vlan_id = db.Column(db.Integer, db.ForeignKey('vlans.id'))
+    tagged_vlans = db.Column(db.String(255))  # Comma-separated VLAN IDs for trunk ports
+    
+    # ========== BONDING/LACP ==========
+    bond_group = db.Column(db.String(20))  # "bond0", "lacp1", "team0"
+    bond_mode = db.Column(db.String(20))  # "active-backup", "802.3ad", "balance-rr"
+    is_bond_primary = db.Column(db.Boolean, default=False)
+    
+    # ========== IP CONFIGURATION ==========
+    ip_address_id = db.Column(db.Integer, db.ForeignKey('ip_addresses.id'))
+    
+    # ========== PHYSICAL DETAILS ==========
+    nic_slot = db.Column(db.String(20))  # "Onboard-1", "PCIe-Slot2-Port1"
+    mac_address = db.Column(db.String(17))
+    
+    # ========== IPMI SPECIFIC ==========
+    is_dedicated_ipmi_port = db.Column(db.Boolean, default=True)
+    # True = Dedicated IPMI port, False = Shared LOM
+    ipmi_sharing_mode = db.Column(db.String(20))  # 'dedicated', 'shared', 'failover'
+    
+    # ========== STATUS ==========
+    link_status = db.Column(db.String(20), default='active')  # 'active', 'down', 'standby'
+    is_enabled = db.Column(db.Boolean, default=True)
+    
+    # ========== METADATA ==========
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # ========== RELATIONSHIPS ==========
+    switch = db.relationship('NetworkDevice', backref='server_connections')
+    switch_port = db.relationship('SwitchPort', backref='server_connection')
+    native_vlan = db.relationship('VLAN', backref='server_connections')
+    ip_address = db.relationship('IPAddress', backref='server_network_connections')
+    
+    # ========== VALIDATIONS ==========
+    
+    @validates('mac_address')
+    def validate_mac(self, key, value):
+        """Validate MAC address format"""
+        if value:
+            mac_pattern = r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$'
+            if not re.match(mac_pattern, value):
+                raise ValueError("Invalid MAC address format")
+            value = value.upper().replace('-', ':')
+        return value
+    
+    @validates('port_speed')
+    def validate_speed(self, key, value):
+        """Validate port speed"""
+        valid_speeds = ['1G', '10G', '25G', '40G', '100G']
+        if value and value not in valid_speeds:
+            raise ValueError(f"Port speed must be one of: {', '.join(valid_speeds)}")
+        return value
+    
+    # ========== PROPERTIES ==========
+    
+    @property
+    def connection_description(self):
+        """Get a human-readable description"""
+        desc = f"{self.connection_name or self.connection_type.title()}"
+        if self.switch:
+            desc += f" - {self.switch.identifier} Port {self.switch_port.port_number if self.switch_port else 'Unknown'}"
+        if self.port_speed:
+            desc += f" ({self.port_speed})"
+        if self.bond_group:
+            desc += f" [Bond: {self.bond_group}]"
+        return desc
+    
+    @property
+    def is_bonded(self):
+        """Check if this connection is part of a bond"""
+        return bool(self.bond_group)
+    
+    def __repr__(self):
+        return f'<ServerNetworkConnection {self.server_id}: {self.connection_description}>'
+
+
+# ========== CUSTOMER MODEL (Basic) ==========
+
+class Customer(db.Model):
+    """
+    Basic customer model for colocation tracking
+    Minimal implementation for v1.0 - can expand later
+    """
+    __tablename__ = 'customers'
+    
+    # ========== PRIMARY KEY ==========
+    id = db.Column(db.Integer, primary_key=True)
+    
+    # ========== CUSTOMER INFO ==========
+    customer_name = db.Column(db.String(100), unique=True, nullable=False)
+    customer_code = db.Column(db.String(20), unique=True)  # TCH51456
+    
+    # ========== CONTACT ==========
+    contact_email = db.Column(db.String(100))
+    contact_phone = db.Column(db.String(20))
+    contact_name = db.Column(db.String(100))
+    
+    # ========== BILLING ==========
+    whmcs_id = db.Column(db.String(50))  # For future integration
+    billing_status = db.Column(db.String(20), default='active')  # active, suspended, cancelled
+    
+    # ========== METADATA ==========
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def __repr__(self):
+        return f'<Customer {self.customer_code}: {self.customer_name}>'

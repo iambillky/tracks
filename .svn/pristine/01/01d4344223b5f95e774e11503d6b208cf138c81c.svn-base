@@ -1,0 +1,882 @@
+"""
+File: routes/servers.py
+Purpose: Route handlers for server management in DCMS
+Version: 1.0.0
+Author: DCMS Team
+Date: 2025-01-16
+
+Implements the Server module with complete CRUD operations,
+IP management, network connections, and customer assignment.
+Follows the "Modified All In" approach for immediate value delivery.
+
+Revision History:
+- v1.0.0: Initial creation with comprehensive server management
+         Includes IP tracking, network connections, IPMI, power management
+"""
+
+from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
+from models.datacenter import db, DataCenter, Floor, Rack, PDU
+from models.server import Server, ServerNetworkConnection, Customer
+from models.ipam import IPAddress
+from models.vlan import VLAN
+from models.network_device import NetworkDevice
+from models.switch_port import SwitchPort
+from forms.server_forms import (
+    ServerForm, NetworkConnectionForm, IPAssignmentForm, 
+    CustomerForm, ServerSearchForm
+)
+from sqlalchemy import or_, and_, func
+from datetime import datetime
+
+# ========== BLUEPRINT INITIALIZATION ==========
+
+servers_bp = Blueprint('servers', __name__, url_prefix='/servers')
+
+# ========== UTILITY FUNCTIONS ==========
+
+def get_available_ips(network_type='public', count=5):
+    """Get available IPs of specified type"""
+    # This is simplified - in production would check IP ranges
+    available = IPAddress.query.filter(
+        IPAddress.status == 'available',
+        IPAddress.network_type == network_type
+    ).limit(count).all()
+    return available
+
+def validate_server_placement(rack_id, start_u, size_u, exclude_server_id=None):
+    """Validate if server can fit in rack space"""
+    rack = Rack.query.get(rack_id)
+    if not rack:
+        return False, "Rack not found"
+    
+    # Check bounds
+    if start_u < 1 or (start_u + size_u - 1) > rack.u_height:
+        return False, f"Position must be between 1 and {rack.u_height}"
+    
+    # Check for conflicts
+    query = Server.query.filter(
+        Server.rack_id == rack_id,
+        Server.start_u < (start_u + size_u),
+        (Server.start_u + Server.size_u) > start_u
+    )
+    
+    if exclude_server_id:
+        query = query.filter(Server.id != exclude_server_id)
+    
+    conflicts = query.all()
+    if conflicts:
+        conflict_names = ', '.join([s.server_id for s in conflicts])
+        return False, f"Space occupied by: {conflict_names}"
+    
+    return True, "Space available"
+
+def assign_ip_to_server(server, ip_address, ip_type='primary_public'):
+    """Assign an IP to a server through IPAM"""
+    # Get or create IP record
+    ip_obj = IPAddress.query.filter_by(ip_address=ip_address).first()
+    if not ip_obj:
+        # Create new IP record
+        ip_obj = IPAddress(
+            ip_address=ip_address,
+            network_type='public' if 'public' in ip_type else 'private',
+            ip_type='primary' if 'primary' in ip_type else 'addon',
+            status='assigned'
+        )
+        db.session.add(ip_obj)
+        db.session.flush()
+    else:
+        # Update existing IP
+        ip_obj.status = 'assigned'
+        ip_obj.assigned_to_type = 'server'
+        ip_obj.assigned_to_id = server.id
+    
+    # Link to server
+    if ip_type == 'primary_public':
+        server.primary_public_ip_id = ip_obj.id
+    elif ip_type == 'primary_private':
+        server.primary_private_ip_id = ip_obj.id
+    elif ip_type == 'ipmi':
+        server.ipmi_ip_id = ip_obj.id
+    else:
+        # Add-on IP
+        if ip_obj not in server.addon_ips:
+            server.addon_ips.append(ip_obj)
+    
+    return ip_obj
+
+# ========== MAIN VIEWS ==========
+
+@servers_bp.route('/')
+def index():
+    """Main server list view with filtering"""
+    # Initialize search form
+    form = ServerSearchForm()
+    
+    # Get filter parameters
+    search_query = request.args.get('search', '')
+    service_type = request.args.get('service_type', 'all')
+    status = request.args.get('status', 'all')
+    datacenter_id = request.args.get('datacenter_id', 'all')
+    customer_id = request.args.get('customer_id', 'all')
+    has_ipmi = request.args.get('has_ipmi', 'all')
+    page = request.args.get('page', 1, type=int)
+    per_page = 25
+    
+    # Build query
+    query = Server.query
+    
+    # Apply search filter
+    if search_query:
+        search_pattern = f'%{search_query}%'
+        query = query.filter(or_(
+            Server.server_id.like(search_pattern),
+            Server.server_name.like(search_pattern),
+            Server.hostname.like(search_pattern)
+        ))
+    
+    # Apply filters
+    if service_type != 'all':
+        query = query.filter_by(service_type=service_type)
+    if status != 'all':
+        query = query.filter_by(status=status)
+    if datacenter_id != 'all':
+        query = query.filter_by(datacenter_id=int(datacenter_id))
+    if customer_id != 'all':
+        query = query.filter_by(customer_id=int(customer_id))
+    if has_ipmi == 'yes':
+        query = query.filter(Server.ipmi_ip_id.isnot(None))
+    elif has_ipmi == 'no':
+        query = query.filter(Server.ipmi_ip_id.is_(None))
+    
+    # Paginate
+    pagination = query.order_by(Server.server_id).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    servers = pagination.items
+    
+    # Get statistics
+    stats = {
+        'total': Server.query.count(),
+        'active': Server.query.filter_by(status='active').count(),
+        'dedicated': Server.query.filter_by(service_type='dedicated').count(),
+        'colocation': Server.query.filter(Server.server_id.like('COLO%')).count(),
+        'with_ipmi': Server.query.filter(Server.ipmi_ip_id.isnot(None)).count()
+    }
+    
+    # Populate form choices
+    form.datacenter_id.choices = [('all', 'All Data Centers')] + [
+        (dc.id, f"{dc.code} - {dc.name}") for dc in DataCenter.query.all()
+    ]
+    form.customer_id.choices = [('all', 'All Customers')] + [
+        (c.id, c.customer_name) for c in Customer.query.all()
+    ]
+    
+    return render_template('servers/index.html',
+                         servers=servers,
+                         pagination=pagination,
+                         form=form,
+                         stats=stats,
+                         filters={
+                             'search': search_query,
+                             'service_type': service_type,
+                             'status': status,
+                             'datacenter_id': datacenter_id,
+                             'customer_id': customer_id,
+                             'has_ipmi': has_ipmi
+                         })
+
+@servers_bp.route('/add', methods=['GET', 'POST'])
+def add():
+    """Add new server"""
+    form = ServerForm()
+    
+    # Populate dropdowns
+    form.datacenter_id.choices = [(0, '-- Select Data Center --')] + [
+        (dc.id, f"{dc.code} - {dc.name}") for dc in DataCenter.query.all()
+    ]
+    
+    # Dynamic rack loading based on datacenter
+    if form.datacenter_id.data:
+        racks = Rack.query.join(Floor).filter(
+            Floor.datacenter_id == form.datacenter_id.data
+        ).all()
+        form.rack_id.choices = [(0, '-- Select Rack --')] + [
+            (r.id, r.rack_id) for r in racks
+        ]
+    else:
+        form.rack_id.choices = [(0, '-- Select Data Center First --')]
+    
+    # PDU choices
+    if form.rack_id.data:
+        pdus = PDU.query.filter_by(rack_id=form.rack_id.data).all()
+        form.pdu_1_id.choices = [(0, '-- No PDU --')] + [
+            (p.id, f"PDU {p.identifier}") for p in pdus
+        ]
+        form.pdu_2_id.choices = [(0, '-- No PDU --')] + [
+            (p.id, f"PDU {p.identifier}") for p in pdus
+        ]
+    else:
+        form.pdu_1_id.choices = [(0, '-- Select Rack First --')]
+        form.pdu_2_id.choices = [(0, '-- Select Rack First --')]
+    
+    # VLAN choices
+    vlans = VLAN.query.filter_by(status='active').order_by(VLAN.vlan_id).all()
+    form.primary_vlan_id.choices = [(0, '-- Auto-detect from IP --')] + [
+        (v.id, f"VLAN {v.vlan_id} - {v.description}") for v in vlans
+    ]
+    
+    # Customer choices (for colocation)
+    customers = Customer.query.filter_by(billing_status='active').all()
+    form.customer_id.choices = [(0, '-- Not Colocation --')] + [
+        (c.id, c.customer_name) for c in customers
+    ]
+    
+    if form.validate_on_submit():
+        try:
+            # Create server
+            server = Server(
+                server_id=form.server_id_input.data.upper(),
+                server_name=form.server_name.data,
+                hostname=form.hostname.data,
+                whmcs_user_id=form.whmcs_user_id.data,
+                equipment_type=form.equipment_type.data,
+                service_type=form.service_type.data,
+                manufacturer=form.manufacturer.data,
+                model=form.model.data,
+                datacenter_id=form.datacenter_id.data,
+                rack_id=form.rack_id.data,
+                start_u=form.start_u.data,
+                size_u=form.size_u.data,
+                status=form.status.data,
+                is_infrastructure=form.is_infrastructure.data,
+                is_managed=form.is_managed.data,
+                is_available=form.is_available.data,
+                notes=form.notes.data
+            )
+            
+            # Validate colocation requirements
+            if server.is_colocation:
+                if not form.customer_id.data:
+                    flash('Colocation servers must be assigned to a customer', 'error')
+                    return render_template('servers/add.html', form=form)
+                server.customer_id = form.customer_id.data
+            
+            # Validate rack space
+            valid, message = validate_server_placement(
+                server.rack_id, server.start_u, server.size_u
+            )
+            if not valid:
+                flash(f'Rack placement error: {message}', 'error')
+                return render_template('servers/add.html', form=form)
+            
+            # Add to session
+            db.session.add(server)
+            db.session.flush()  # Get server ID
+            
+            # Handle IP assignments
+            if form.primary_public_ip.data:
+                assign_ip_to_server(server, form.primary_public_ip.data, 'primary_public')
+            
+            if form.primary_private_ip.data:
+                assign_ip_to_server(server, form.primary_private_ip.data, 'primary_private')
+            
+            if form.ipmi_ip.data:
+                # Set IPMI fields
+                server.ipmi_type = form.ipmi_type.data
+                server.ipmi_version = form.ipmi_version.data
+                server.ipmi_username = form.ipmi_username.data
+                if form.ipmi_password.data:
+                    # In production, encrypt this!
+                    server.ipmi_password_encrypted = form.ipmi_password.data
+                server.ipmi_mac_address = form.ipmi_mac_address.data
+                server.ipmi_web_port = form.ipmi_web_port.data
+                server.ipmi_notes = form.ipmi_notes.data
+                
+                assign_ip_to_server(server, form.ipmi_ip.data, 'ipmi')
+            
+            # Handle VLAN assignment
+            if form.primary_vlan_id.data:
+                server.primary_vlan_id = form.primary_vlan_id.data
+            elif form.primary_public_ip.data:
+                # Auto-detect VLAN from IP
+                # This would need proper implementation based on your subnet mappings
+                pass
+            
+            # Handle power connections
+            if form.pdu_1_id.data:
+                server.pdu_1_id = form.pdu_1_id.data
+                server.pdu_1_outlet = form.pdu_1_outlet.data
+            
+            if form.pdu_2_id.data:
+                server.pdu_2_id = form.pdu_2_id.data
+                server.pdu_2_outlet = form.pdu_2_outlet.data
+            
+            server.power_draw_watts = form.power_draw_watts.data
+            server.power_supply_config = form.power_supply_config.data
+            
+            # Service details
+            server.ssh_port = form.ssh_port.data
+            server.rdp_port = form.rdp_port.data
+            server.in_service_date = form.in_service_date.data
+            
+            # Commit
+            db.session.commit()
+            
+            flash(f'Server {server.server_id} created successfully!', 'success')
+            return redirect(url_for('servers.view', id=server.id))
+            
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error creating server: {str(e)}', 'error')
+    
+    return render_template('servers/add.html', form=form)
+
+@servers_bp.route('/<int:id>')
+def view(id):
+    """View server details"""
+    server = Server.query.get_or_404(id)
+    
+    # Get network connections
+    connections = server.network_connections.order_by(
+        ServerNetworkConnection.connection_type,
+        ServerNetworkConnection.connection_name
+    ).all()
+    
+    # Group connections by type
+    connections_by_type = {}
+    for conn in connections:
+        if conn.connection_type not in connections_by_type:
+            connections_by_type[conn.connection_type] = []
+        connections_by_type[conn.connection_type].append(conn)
+    
+    # Get all IPs
+    all_ips = {
+        'primary_public': server.primary_public_ip,
+        'primary_private': server.primary_private_ip,
+        'ipmi': server.ipmi_ip,
+        'addon_public': [],
+        'addon_private': []
+    }
+    
+    for ip in server.addon_ips:
+        if ip.network_type == 'public':
+            all_ips['addon_public'].append(ip)
+        else:
+            all_ips['addon_private'].append(ip)
+    
+    return render_template('servers/view.html',
+                         server=server,
+                         connections=connections,
+                         connections_by_type=connections_by_type,
+                         all_ips=all_ips)
+
+@servers_bp.route('/<int:id>/edit', methods=['GET', 'POST'])
+def edit(id):
+    """Edit server"""
+    server = Server.query.get_or_404(id)
+    form = ServerForm(obj=server)
+    
+    # Store original server ID for validation
+    form.original_server_id.data = server.server_id
+    form.server_id.data = server.id
+    
+    # Pre-populate form
+    if request.method == 'GET':
+        form.server_id_input.data = server.server_id
+        form.primary_public_ip.data = server.primary_public_ip.ip_address if server.primary_public_ip else ''
+        form.primary_private_ip.data = server.primary_private_ip.ip_address if server.primary_private_ip else ''
+        form.ipmi_ip.data = server.ipmi_ip.ip_address if server.ipmi_ip else ''
+    
+    # Populate dropdowns (same as add)
+    form.datacenter_id.choices = [(dc.id, f"{dc.code} - {dc.name}") 
+                                  for dc in DataCenter.query.all()]
+    
+    racks = Rack.query.join(Floor).filter(
+        Floor.datacenter_id == (form.datacenter_id.data or server.datacenter_id)
+    ).all()
+    form.rack_id.choices = [(r.id, r.rack_id) for r in racks]
+    
+    pdus = PDU.query.filter_by(
+        rack_id=(form.rack_id.data or server.rack_id)
+    ).all()
+    form.pdu_1_id.choices = [(0, '-- No PDU --')] + [(p.id, f"PDU {p.identifier}") for p in pdus]
+    form.pdu_2_id.choices = [(0, '-- No PDU --')] + [(p.id, f"PDU {p.identifier}") for p in pdus]
+    
+    vlans = VLAN.query.filter_by(status='active').order_by(VLAN.vlan_id).all()
+    form.primary_vlan_id.choices = [(0, '-- Auto-detect --')] + [
+        (v.id, f"VLAN {v.vlan_id} - {v.description}") for v in vlans
+    ]
+    
+    customers = Customer.query.filter_by(billing_status='active').all()
+    form.customer_id.choices = [(0, '-- Not Colocation --')] + [
+        (c.id, c.customer_name) for c in customers
+    ]
+    
+    if form.validate_on_submit():
+        try:
+            # Update server fields
+            server.server_id = form.server_id_input.data.upper()
+            server.server_name = form.server_name.data
+            server.hostname = form.hostname.data
+            server.whmcs_user_id = form.whmcs_user_id.data
+            server.equipment_type = form.equipment_type.data
+            server.service_type = form.service_type.data
+            server.manufacturer = form.manufacturer.data
+            server.model = form.model.data
+            server.datacenter_id = form.datacenter_id.data
+            server.rack_id = form.rack_id.data
+            server.start_u = form.start_u.data
+            server.size_u = form.size_u.data
+            server.status = form.status.data
+            server.is_infrastructure = form.is_infrastructure.data
+            server.is_managed = form.is_managed.data
+            server.is_available = form.is_available.data
+            server.notes = form.notes.data
+            
+            # Update customer
+            if server.is_colocation:
+                server.customer_id = form.customer_id.data
+            else:
+                server.customer_id = None
+            
+            # Validate rack space
+            valid, message = validate_server_placement(
+                server.rack_id, server.start_u, server.size_u, server.id
+            )
+            if not valid:
+                flash(f'Rack placement error: {message}', 'error')
+                return render_template('servers/edit.html', form=form, server=server)
+            
+            # Update IPs (simplified - production would handle changes better)
+            if form.primary_public_ip.data:
+                assign_ip_to_server(server, form.primary_public_ip.data, 'primary_public')
+            
+            if form.primary_private_ip.data:
+                assign_ip_to_server(server, form.primary_private_ip.data, 'primary_private')
+            
+            if form.ipmi_ip.data:
+                server.ipmi_type = form.ipmi_type.data
+                server.ipmi_version = form.ipmi_version.data
+                server.ipmi_username = form.ipmi_username.data
+                if form.ipmi_password.data:
+                    server.ipmi_password_encrypted = form.ipmi_password.data
+                server.ipmi_mac_address = form.ipmi_mac_address.data
+                server.ipmi_web_port = form.ipmi_web_port.data
+                server.ipmi_notes = form.ipmi_notes.data
+                assign_ip_to_server(server, form.ipmi_ip.data, 'ipmi')
+            
+            # Update power
+            server.pdu_1_id = form.pdu_1_id.data if form.pdu_1_id.data else None
+            server.pdu_1_outlet = form.pdu_1_outlet.data
+            server.pdu_2_id = form.pdu_2_id.data if form.pdu_2_id.data else None
+            server.pdu_2_outlet = form.pdu_2_outlet.data
+            server.power_draw_watts = form.power_draw_watts.data
+            server.power_supply_config = form.power_supply_config.data
+            
+            # Update service details
+            server.ssh_port = form.ssh_port.data
+            server.rdp_port = form.rdp_port.data
+            server.in_service_date = form.in_service_date.data
+            server.decommission_date = form.decommission_date.data
+            
+            # Update metadata
+            server.updated_at = datetime.utcnow()
+            server.updated_by = 'current_user'  # In production, get from session
+            
+            db.session.commit()
+            
+            flash(f'Server {server.server_id} updated successfully!', 'success')
+            return redirect(url_for('servers.view', id=server.id))
+            
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error updating server: {str(e)}', 'error')
+    
+    return render_template('servers/edit.html', form=form, server=server)
+
+@servers_bp.route('/<int:id>/delete', methods=['POST'])
+def delete(id):
+    """Delete server"""
+    server = Server.query.get_or_404(id)
+    server_id = server.server_id
+    
+    try:
+        # Release IPs
+        if server.primary_public_ip:
+            server.primary_public_ip.status = 'available'
+            server.primary_public_ip.assigned_to_type = None
+            server.primary_public_ip.assigned_to_id = None
+        
+        if server.primary_private_ip:
+            server.primary_private_ip.status = 'available'
+            server.primary_private_ip.assigned_to_type = None
+            server.primary_private_ip.assigned_to_id = None
+        
+        if server.ipmi_ip:
+            server.ipmi_ip.status = 'available'
+            server.ipmi_ip.assigned_to_type = None
+            server.ipmi_ip.assigned_to_id = None
+        
+        # Release addon IPs
+        for ip in server.addon_ips:
+            ip.status = 'available'
+            ip.assigned_to_type = None
+            ip.assigned_to_id = None
+        
+        # Delete server (connections will cascade)
+        db.session.delete(server)
+        db.session.commit()
+        
+        flash(f'Server {server_id} deleted successfully', 'success')
+        
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error deleting server: {str(e)}', 'error')
+    
+    return redirect(url_for('servers.index'))
+
+# ========== NETWORK CONNECTION MANAGEMENT ==========
+
+@servers_bp.route('/<int:id>/connections')
+def connections(id):
+    """Manage server network connections"""
+    server = Server.query.get_or_404(id)
+    connections = server.network_connections.all()
+    
+    # Group by connection type
+    grouped = {}
+    for conn in connections:
+        if conn.connection_type not in grouped:
+            grouped[conn.connection_type] = []
+        grouped[conn.connection_type].append(conn)
+    
+    # Calculate bandwidth
+    total_bandwidth = server.total_bandwidth
+    
+    return render_template('servers/connections.html',
+                         server=server,
+                         connections=connections,
+                         grouped_connections=grouped,
+                         total_bandwidth=total_bandwidth)
+
+@servers_bp.route('/<int:id>/connections/add', methods=['GET', 'POST'])
+def add_connection(id):
+    """Add network connection to server"""
+    server = Server.query.get_or_404(id)
+    form = NetworkConnectionForm()
+    
+    # Populate switch choices
+    switches = NetworkDevice.query.filter_by(device_type='Switch').order_by(NetworkDevice.identifier).all()
+    form.switch_id.choices = [(0, '-- Select Switch --')] + [
+        (s.id, f"{s.identifier} - {s.hostname}") for s in switches
+    ]
+    
+    # VLAN choices
+    vlans = VLAN.query.filter_by(status='active').order_by(VLAN.vlan_id).all()
+    form.native_vlan_id.choices = [(0, '-- No VLAN --')] + [
+        (v.id, f"VLAN {v.vlan_id} - {v.description}") for v in vlans
+    ]
+    
+    if form.validate_on_submit():
+        try:
+            # Check port availability
+            existing = ServerNetworkConnection.query.filter_by(
+                switch_id=form.switch_id.data,
+                switch_port_id=form.switch_port.data
+            ).first()
+            
+            if existing:
+                flash(f'Port already in use by {existing.server.server_id}', 'error')
+                return render_template('servers/add_connection.html', form=form, server=server)
+            
+            # Create connection
+            connection = ServerNetworkConnection(
+                server_id=server.id,
+                connection_name=form.connection_name.data,
+                connection_type=form.connection_type.data,
+                switch_id=form.switch_id.data,
+                port_speed=form.port_speed.data,
+                native_vlan_id=form.native_vlan_id.data if form.native_vlan_id.data else None,
+                mac_address=form.mac_address.data,
+                bond_group=form.bond_group.data,
+                bond_mode=form.bond_mode.data if form.bond_mode.data else None,
+                is_bond_primary=form.is_bond_primary.data,
+                link_status=form.link_status.data,
+                is_enabled=form.is_enabled.data,
+                notes=form.notes.data
+            )
+            
+            # Get switch port
+            switch_port = SwitchPort.query.filter_by(
+                switch_id=form.switch_id.data,
+                port_number=form.switch_port.data
+            ).first()
+            
+            if switch_port:
+                connection.switch_port_id = switch_port.id
+                switch_port.is_connected = True
+                switch_port.connected_device_type = 'server'
+                switch_port.connected_device_id = server.id
+            
+            db.session.add(connection)
+            db.session.commit()
+            
+            flash(f'Network connection added successfully', 'success')
+            return redirect(url_for('servers.connections', id=server.id))
+            
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error adding connection: {str(e)}', 'error')
+    
+    return render_template('servers/add_connection.html', form=form, server=server)
+
+@servers_bp.route('/connections/<int:conn_id>/delete', methods=['POST'])
+def delete_connection(conn_id):
+    """Delete network connection"""
+    connection = ServerNetworkConnection.query.get_or_404(conn_id)
+    server_id = connection.server_id
+    
+    try:
+        # Release switch port
+        if connection.switch_port:
+            connection.switch_port.is_connected = False
+            connection.switch_port.connected_device_type = None
+            connection.switch_port.connected_device_id = None
+        
+        db.session.delete(connection)
+        db.session.commit()
+        
+        flash('Network connection removed', 'success')
+        
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error removing connection: {str(e)}', 'error')
+    
+    return redirect(url_for('servers.connections', id=server_id))
+
+# ========== IP MANAGEMENT ==========
+
+@servers_bp.route('/<int:id>/ips')
+def ip_assignments(id):
+    """View all IP assignments for server"""
+    server = Server.query.get_or_404(id)
+    
+    # Organize IPs
+    ips = {
+        'primary': [],
+        'addon': [],
+        'ipmi': None
+    }
+    
+    if server.primary_public_ip:
+        ips['primary'].append(server.primary_public_ip)
+    if server.primary_private_ip:
+        ips['primary'].append(server.primary_private_ip)
+    if server.ipmi_ip:
+        ips['ipmi'] = server.ipmi_ip
+    
+    for ip in server.addon_ips:
+        ips['addon'].append(ip)
+    
+    return render_template('servers/ip_assignments.html',
+                         server=server,
+                         ips=ips)
+
+@servers_bp.route('/<int:id>/ips/add', methods=['GET', 'POST'])
+def add_ips(id):
+    """Add additional IPs to server"""
+    server = Server.query.get_or_404(id)
+    form = IPAssignmentForm()
+    
+    if form.validate_on_submit():
+        try:
+            # Parse IP addresses
+            ip_list = [ip.strip() for ip in form.ip_addresses.data.strip().split('\n') if ip.strip()]
+            
+            added_count = 0
+            for ip_address in ip_list:
+                # Validate colocation IP rules
+                if server.is_colocation and not ip_address.startswith('66.'):
+                    flash(f'{ip_address} invalid - colocation servers must use 66.x space', 'error')
+                    continue
+                
+                # Check if IP exists
+                ip_obj = IPAddress.query.filter_by(ip_address=ip_address).first()
+                if not ip_obj:
+                    # Create new IP
+                    ip_obj = IPAddress(
+                        ip_address=ip_address,
+                        network_type='public' if form.assignment_type.data == 'addon_public' else 'private',
+                        ip_type='addon',
+                        status='assigned',
+                        assigned_to_type='server',
+                        assigned_to_id=server.id
+                    )
+                    db.session.add(ip_obj)
+                else:
+                    # Check if available
+                    if ip_obj.is_assigned and ip_obj.assigned_to_id != server.id:
+                        flash(f'{ip_address} already assigned to {ip_obj.assigned_device_name}', 'error')
+                        continue
+                    
+                    # Update existing
+                    ip_obj.status = 'assigned'
+                    ip_obj.assigned_to_type = 'server'
+                    ip_obj.assigned_to_id = server.id
+                
+                # Add to server's addon IPs
+                if ip_obj not in server.addon_ips:
+                    server.addon_ips.append(ip_obj)
+                    added_count += 1
+            
+            if added_count > 0:
+                db.session.commit()
+                flash(f'{added_count} IP(s) added successfully', 'success')
+                return redirect(url_for('servers.ip_assignments', id=server.id))
+            
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error adding IPs: {str(e)}', 'error')
+    
+    return render_template('servers/add_ips.html', form=form, server=server)
+
+# ========== CUSTOMER MANAGEMENT ==========
+
+@servers_bp.route('/customers')
+def customers():
+    """List all customers"""
+    customers = Customer.query.order_by(Customer.customer_name).all()
+    
+    # Get server counts
+    for customer in customers:
+        customer.server_count = Server.query.filter_by(customer_id=customer.id).count()
+    
+    return render_template('servers/customers.html', customers=customers)
+
+@servers_bp.route('/customers/add', methods=['GET', 'POST'])
+def add_customer():
+    """Add new customer"""
+    form = CustomerForm()
+    
+    if form.validate_on_submit():
+        try:
+            customer = Customer(
+                customer_name=form.customer_name.data,
+                customer_code=form.customer_code.data,
+                contact_name=form.contact_name.data,
+                contact_email=form.contact_email.data,
+                contact_phone=form.contact_phone.data,
+                whmcs_id=form.whmcs_id.data,
+                billing_status=form.billing_status.data,
+                notes=form.notes.data
+            )
+            
+            db.session.add(customer)
+            db.session.commit()
+            
+            flash(f'Customer {customer.customer_name} created successfully', 'success')
+            return redirect(url_for('servers.customers'))
+            
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error creating customer: {str(e)}', 'error')
+    
+    return render_template('servers/add_customer.html', form=form)
+
+@servers_bp.route('/customers/<int:id>')
+def view_customer(id):
+    """View customer details and their servers"""
+    customer = Customer.query.get_or_404(id)
+    servers = Server.query.filter_by(customer_id=customer.id).all()
+    
+    # Calculate statistics
+    stats = {
+        'total_servers': len(servers),
+        'active_servers': len([s for s in servers if s.status == 'active']),
+        'total_ips': sum(s.total_ip_count for s in servers),
+        'racks_used': len(set(s.rack_id for s in servers))
+    }
+    
+    return render_template('servers/view_customer.html',
+                         customer=customer,
+                         servers=servers,
+                         stats=stats)
+
+# ========== API ENDPOINTS ==========
+
+@servers_bp.route('/api/available-ips/<network_type>')
+def api_available_ips(network_type):
+    """API to get available IPs of specified type"""
+    count = request.args.get('count', 5, type=int)
+    
+    # For colocation servers, only show 66.x IPs
+    if request.args.get('colocation') == 'true' and network_type == 'public':
+        available = IPAddress.query.filter(
+            IPAddress.status == 'available',
+            IPAddress.ip_address.like('66.%')
+        ).limit(count).all()
+    else:
+        available = IPAddress.query.filter(
+            IPAddress.status == 'available',
+            IPAddress.network_type == network_type
+        ).limit(count).all()
+    
+    return jsonify([{
+        'id': ip.id,
+        'ip_address': ip.ip_address,
+        'network_type': ip.network_type
+    } for ip in available])
+
+@servers_bp.route('/api/rack/<int:rack_id>/availability')
+def api_rack_availability(rack_id):
+    """API to get rack space availability"""
+    rack = Rack.query.get_or_404(rack_id)
+    servers = Server.query.filter_by(rack_id=rack_id).order_by(Server.start_u).all()
+    
+    # Build usage map
+    usage = {}
+    for u in range(1, rack.u_height + 1):
+        usage[u] = None
+    
+    for server in servers:
+        for u in range(server.start_u, server.start_u + server.size_u):
+            usage[u] = {
+                'server_id': server.server_id,
+                'server_name': server.server_name
+            }
+    
+    return jsonify({
+        'rack_id': rack.rack_id,
+        'total_u': rack.u_height,
+        'usage': usage,
+        'available_u': sum(1 for v in usage.values() if v is None)
+    })
+
+@servers_bp.route('/api/validate-server-id')
+def api_validate_server_id():
+    """API to validate server ID format and uniqueness"""
+    server_id = request.args.get('server_id', '').upper()
+    
+    # Check format
+    is_valid = False
+    server_type = None
+    
+    if server_id.startswith('COLO'):
+        if re.match(r'^COLO(TCH)?\d+$', server_id):
+            is_valid = True
+            server_type = 'colocation'
+    else:
+        if re.match(r'^[A-Z]{3}-[A-Z]{3}-[A-Z]\d+$', server_id):
+            is_valid = True
+            server_type = 'dedicated'
+    
+    # Check uniqueness
+    exists = Server.query.filter_by(server_id=server_id).first() is not None
+    
+    return jsonify({
+        'server_id': server_id,
+        'is_valid': is_valid,
+        'exists': exists,
+        'server_type': server_type,
+        'available': is_valid and not exists
+    })
