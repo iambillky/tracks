@@ -1,0 +1,1117 @@
+<!--
+File: templates/servers/view.html
+Purpose: Comprehensive read-only view of server details
+Version: 1.0.0
+Author: DCMS Team
+Date: 2025-01-17
+
+Features:
+- Tabbed interface matching add/edit forms
+- Complete server information display
+- Network topology visualization
+- Power redundancy status
+- Quick actions menu
+- Status indicators
+- Related equipment links
+-->
+
+{% extends "base.html" %}
+
+{% block title %}{{ server.server_id }} - Server Details{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* ========== CONTAINER ========== */
+    .view-container {
+        max-width: 1400px;
+        margin: 0 auto;
+    }
+    
+    /* ========== HEADER CARD ========== */
+    .header-card {
+        background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+        border-radius: 12px;
+        padding: 25px;
+        margin-bottom: 25px;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .header-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 300px;
+        height: 300px;
+        background: radial-gradient(circle, rgba(96, 165, 250, 0.1) 0%, transparent 70%);
+        border-radius: 50%;
+        transform: translate(100px, -100px);
+    }
+    
+    .header-content {
+        position: relative;
+        z-index: 1;
+    }
+    
+    .server-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: start;
+        margin-bottom: 20px;
+    }
+    
+    .server-id {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #fff;
+        margin-bottom: 5px;
+    }
+    
+    .server-name {
+        font-size: 1.2rem;
+        color: #cbd5e1;
+    }
+    
+    .server-hostname {
+        font-size: 0.95rem;
+        color: #94a3b8;
+        font-family: 'Courier New', monospace;
+        margin-top: 5px;
+    }
+    
+    .status-badges {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+    
+    .badge {
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 0.875rem;
+        font-weight: 500;
+    }
+    
+    .badge-active {
+        background: #10b981;
+        color: white;
+    }
+    
+    .badge-maintenance {
+        background: #f59e0b;
+        color: white;
+    }
+    
+    .badge-decommissioned {
+        background: #6b7280;
+        color: white;
+    }
+    
+    .badge-infrastructure {
+        background: #8b5cf6;
+        color: white;
+    }
+    
+    .badge-managed {
+        background: #3b82f6;
+        color: white;
+    }
+    
+    .badge-colocation {
+        background: #ec4899;
+        color: white;
+    }
+    
+    /* ========== QUICK INFO GRID ========== */
+    .quick-info-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+        margin-top: 20px;
+        padding-top: 20px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .quick-info-item {
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .quick-info-label {
+        font-size: 0.875rem;
+        color: #94a3b8;
+        margin-bottom: 3px;
+    }
+    
+    .quick-info-value {
+        font-size: 1rem;
+        color: #fff;
+        font-weight: 500;
+    }
+    
+    .quick-info-value a {
+        color: #60a5fa;
+        text-decoration: none;
+    }
+    
+    .quick-info-value a:hover {
+        text-decoration: underline;
+    }
+    
+    /* ========== ACTION BUTTONS ========== */
+    .action-buttons {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+    
+    .btn {
+        padding: 10px 20px;
+        border: none;
+        border-radius: 6px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        text-decoration: none;
+        color: white;
+    }
+    
+    .btn-primary {
+        background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+    }
+    
+    .btn-primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(96, 165, 250, 0.3);
+    }
+    
+    .btn-secondary {
+        background: rgba(255, 255, 255, 0.1);
+        color: #e4e6eb;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    
+    .btn-secondary:hover {
+        background: rgba(255, 255, 255, 0.15);
+    }
+    
+    .btn-success {
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    }
+    
+    .btn-warning {
+        background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+    }
+    
+    .btn-danger {
+        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+    }
+    
+    /* ========== TABS ========== */
+    .nav-tabs {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        margin-bottom: 25px;
+    }
+    
+    .nav-tabs .nav-link {
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 8px 8px 0 0;
+        color: #94a3b8;
+        padding: 12px 20px;
+        margin-right: 5px;
+        transition: all 0.2s ease;
+        cursor: pointer;
+        text-decoration: none;
+    }
+    
+    .nav-tabs .nav-link:hover {
+        background: rgba(255, 255, 255, 0.05);
+        color: #e4e6eb;
+    }
+    
+    .nav-tabs .nav-link.active {
+        background: rgba(96, 165, 250, 0.1);
+        border-color: rgba(96, 165, 250, 0.3) rgba(96, 165, 250, 0.3) transparent;
+        color: #60a5fa;
+    }
+    
+    /* Tab content */
+    .tab-content {
+        padding: 20px 0;
+    }
+    
+    .tab-pane {
+        display: none;
+    }
+    
+    .tab-pane.show.active {
+        display: block;
+    }
+    
+    /* ========== INFO SECTIONS ========== */
+    .info-section {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 25px;
+        margin-bottom: 25px;
+    }
+    
+    .info-section-title {
+        color: #60a5fa;
+        font-size: 1.2rem;
+        font-weight: 600;
+        margin-bottom: 20px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    /* ========== DATA GRID ========== */
+    .data-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 20px;
+    }
+    
+    .data-item {
+        display: flex;
+        justify-content: space-between;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .data-label {
+        color: #94a3b8;
+        font-weight: 500;
+    }
+    
+    .data-value {
+        color: #fff;
+        text-align: right;
+    }
+    
+    .data-value-highlight {
+        color: #60a5fa;
+        font-weight: 600;
+    }
+    
+    /* ========== IP ADDRESS DISPLAY ========== */
+    .ip-section {
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 8px;
+        padding: 15px;
+        margin-bottom: 15px;
+    }
+    
+    .ip-section-title {
+        color: #60a5fa;
+        font-size: 0.95rem;
+        font-weight: 600;
+        margin-bottom: 10px;
+    }
+    
+    .ip-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+    
+    .ip-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 12px;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 6px;
+        font-family: 'Courier New', monospace;
+    }
+    
+    .ip-address {
+        color: #fbbf24;
+        font-weight: 500;
+    }
+    
+    .ip-type {
+        font-size: 0.875rem;
+        color: #94a3b8;
+    }
+    
+    /* ========== CONNECTION TABLE ========== */
+    .connection-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    
+    .connection-table th {
+        background: rgba(255, 255, 255, 0.05);
+        color: #94a3b8;
+        padding: 12px;
+        text-align: left;
+        font-weight: 600;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .connection-table td {
+        padding: 12px;
+        color: #e4e6eb;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .connection-table tr:hover {
+        background: rgba(255, 255, 255, 0.03);
+    }
+    
+    .connection-status {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 8px;
+    }
+    
+    .status-up {
+        background: #10b981;
+        box-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+    }
+    
+    .status-down {
+        background: #ef4444;
+        box-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+    }
+    
+    /* ========== POWER STATUS ========== */
+    .power-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+    }
+    
+    .power-card {
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 8px;
+        padding: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .power-card-title {
+        color: #60a5fa;
+        font-weight: 600;
+        margin-bottom: 15px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .power-details {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+    
+    .power-item {
+        display: flex;
+        justify-content: space-between;
+    }
+    
+    .power-label {
+        color: #94a3b8;
+    }
+    
+    .power-value {
+        color: #fff;
+        font-weight: 500;
+    }
+    
+    .redundancy-warning {
+        background: rgba(245, 158, 11, 0.1);
+        border: 1px solid rgba(245, 158, 11, 0.3);
+        border-radius: 6px;
+        padding: 10px;
+        margin-top: 15px;
+        color: #f59e0b;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .redundancy-ok {
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.3);
+        color: #10b981;
+    }
+    
+    /* ========== NOTES SECTION ========== */
+    .notes-content {
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 8px;
+        padding: 15px;
+        white-space: pre-wrap;
+        font-family: 'Courier New', monospace;
+        color: #e4e6eb;
+        line-height: 1.6;
+    }
+    
+    .no-data {
+        color: #6b7280;
+        font-style: italic;
+    }
+    
+    /* ========== TIMESTAMPS ========== */
+    .timestamp-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+        padding: 15px;
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 8px;
+    }
+    
+    .timestamp-item {
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .timestamp-label {
+        color: #94a3b8;
+        font-size: 0.875rem;
+        margin-bottom: 3px;
+    }
+    
+    .timestamp-value {
+        color: #cbd5e1;
+        font-size: 0.95rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="view-container">
+    
+    <!-- ========== HEADER CARD ========== -->
+    <div class="header-card">
+        <div class="header-content">
+            <div class="server-title">
+                <div>
+                    <div class="server-id">{{ server.server_id }}</div>
+                    <div class="server-name">{{ server.server_name }}</div>
+                    {% if server.hostname %}
+                    <div class="server-hostname">{{ server.hostname }}</div>
+                    {% endif %}
+                </div>
+                <div class="action-buttons">
+                    <a href="{{ url_for('servers.edit', id=server.id) }}" class="btn btn-primary">
+                        <i class="fas fa-edit"></i> Edit
+                    </a>
+                    <button class="btn btn-secondary" onclick="window.print()">
+                        <i class="fas fa-print"></i> Print
+                    </button>
+                    {% if server.ipmi_ip %}
+                    <a href="https://{{ server.ipmi_ip.ip_address }}" target="_blank" class="btn btn-success">
+                        <i class="fas fa-terminal"></i> IPMI
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <div class="status-badges">
+                {% if server.status == 'active' %}
+                    <span class="badge badge-active">Active</span>
+                {% elif server.status == 'maintenance' %}
+                    <span class="badge badge-maintenance">Maintenance</span>
+                {% elif server.status == 'decommissioned' %}
+                    <span class="badge badge-decommissioned">Decommissioned</span>
+                {% else %}
+                    <span class="badge">{{ server.status|title }}</span>
+                {% endif %}
+                
+                {% if server.is_colocation %}
+                    <span class="badge badge-colocation">Colocation</span>
+                {% endif %}
+                
+                {% if server.is_infrastructure %}
+                    <span class="badge badge-infrastructure">Infrastructure</span>
+                {% endif %}
+                
+                {% if server.is_managed %}
+                    <span class="badge badge-managed">Managed</span>
+                {% endif %}
+                
+                {% if server.ipmi_ip %}
+                    <span class="badge" style="background: #8b5cf6;">IPMI Enabled</span>
+                {% endif %}
+            </div>
+            
+            <div class="quick-info-grid">
+                <div class="quick-info-item">
+                    <span class="quick-info-label">Location</span>
+                    <span class="quick-info-value">
+                        <a href="{{ url_for('datacenters.dc_detail', dc_id=server.datacenter.id) }}">
+                            {{ server.datacenter.code }}
+                        </a> /
+                        <a href="{{ url_for('datacenters.rack_detail', rack_id=server.rack.id) }}">
+                            {{ server.rack.rack_id }}
+                        </a> /
+                        U{{ server.start_u }}-U{{ server.start_u + server.size_u - 1 }}
+                    </span>
+                </div>
+                <div class="quick-info-item">
+                    <span class="quick-info-label">Service Type</span>
+                    <span class="quick-info-value">{{ server.service_type|title }}</span>
+                </div>
+                <div class="quick-info-item">
+                    <span class="quick-info-label">Equipment Type</span>
+                    <span class="quick-info-value">{{ server.equipment_type|title }}</span>
+                </div>
+                {% if server.customer %}
+                <div class="quick-info-item">
+                    <span class="quick-info-label">Customer</span>
+                    <span class="quick-info-value">
+                        <a href="{{ url_for('servers.view_customer', id=server.customer.id) }}">
+                            {{ server.customer.customer_name }}
+                        </a>
+                    </span>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <!-- ========== TABBED CONTENT ========== -->
+    <ul class="nav nav-tabs" id="serverTabs" role="tablist">
+        <li class="nav-item">
+            <a class="nav-link active" id="details-tab" data-toggle="tab" href="#details" role="tab">
+                <i class="fas fa-info-circle"></i> Details
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="network-tab" data-toggle="tab" href="#network" role="tab">
+                <i class="fas fa-network-wired"></i> Network
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="management-tab" data-toggle="tab" href="#management" role="tab">
+                <i class="fas fa-cog"></i> Management
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="history-tab" data-toggle="tab" href="#history" role="tab">
+                <i class="fas fa-history"></i> History
+            </a>
+        </li>
+    </ul>
+    
+    <div class="tab-content">
+        
+        <!-- ========== DETAILS TAB ========== -->
+        <div class="tab-pane fade show active" id="details" role="tabpanel">
+            
+            <!-- Server Information -->
+            <div class="info-section">
+                <h3 class="info-section-title">Server Information</h3>
+                <div class="data-grid">
+                    <div class="data-item">
+                        <span class="data-label">Server ID</span>
+                        <span class="data-value data-value-highlight">{{ server.server_id }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Server Name</span>
+                        <span class="data-value">{{ server.server_name }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Hostname</span>
+                        <span class="data-value">{{ server.hostname or '-' }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">WHMCS User ID</span>
+                        <span class="data-value">{{ server.whmcs_user_id or '-' }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Manufacturer</span>
+                        <span class="data-value">{{ server.manufacturer or '-' }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Model</span>
+                        <span class="data-value">{{ server.model or '-' }}</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Physical Location -->
+            <div class="info-section">
+                <h3 class="info-section-title">Physical Location</h3>
+                <div class="data-grid">
+                    <div class="data-item">
+                        <span class="data-label">Data Center</span>
+                        <span class="data-value">
+                            <a href="{{ url_for('datacenters.dc_detail', dc_id=server.datacenter.id) }}" style="color: #60a5fa;">
+                                {{ server.datacenter.code }} - {{ server.datacenter.name }}
+                            </a>
+                        </span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Rack</span>
+                        <span class="data-value">
+                            <a href="{{ url_for('datacenters.rack_detail', rack_id=server.rack.id) }}" style="color: #60a5fa;">
+                                {{ server.rack.rack_id }}
+                            </a>
+                        </span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Position</span>
+                        <span class="data-value">U{{ server.start_u }} - U{{ server.start_u + server.size_u - 1 }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Size</span>
+                        <span class="data-value">{{ server.size_u }}U</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Service Configuration -->
+            <div class="info-section">
+                <h3 class="info-section-title">Service Configuration</h3>
+                <div class="data-grid">
+                    <div class="data-item">
+                        <span class="data-label">Service Type</span>
+                        <span class="data-value">{{ server.service_type|title }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Equipment Type</span>
+                        <span class="data-value">{{ server.equipment_type|title }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Status</span>
+                        <span class="data-value">
+                            {% if server.status == 'active' %}
+                                <span style="color: #10b981;">● Active</span>
+                            {% elif server.status == 'maintenance' %}
+                                <span style="color: #f59e0b;">● Maintenance</span>
+                            {% elif server.status == 'decommissioned' %}
+                                <span style="color: #6b7280;">● Decommissioned</span>
+                            {% else %}
+                                {{ server.status|title }}
+                            {% endif %}
+                        </span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Infrastructure Device</span>
+                        <span class="data-value">{{ 'Yes' if server.is_infrastructure else 'No' }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Managed</span>
+                        <span class="data-value">{{ 'Yes' if server.is_managed else 'No' }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Available</span>
+                        <span class="data-value">{{ 'Yes' if server.is_available else 'No' }}</span>
+                    </div>
+                </div>
+            </div>
+            
+            {% if server.customer %}
+            <!-- Customer Information -->
+            <div class="info-section">
+                <h3 class="info-section-title">Customer Information</h3>
+                <div class="data-grid">
+                    <div class="data-item">
+                        <span class="data-label">Customer Name</span>
+                        <span class="data-value">
+                            <a href="{{ url_for('servers.view_customer', id=server.customer.id) }}" style="color: #60a5fa;">
+                                {{ server.customer.customer_name }}
+                            </a>
+                        </span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Customer Code</span>
+                        <span class="data-value">{{ server.customer.customer_code or '-' }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Contact Name</span>
+                        <span class="data-value">{{ server.customer.contact_name or '-' }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Contact Email</span>
+                        <span class="data-value">
+                            {% if server.customer.contact_email %}
+                                <a href="mailto:{{ server.customer.contact_email }}" style="color: #60a5fa;">
+                                    {{ server.customer.contact_email }}
+                                </a>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </span>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+            
+            <!-- Notes -->
+            {% if server.notes %}
+            <div class="info-section">
+                <h3 class="info-section-title">Notes</h3>
+                <div class="notes-content">{{ server.notes }}</div>
+            </div>
+            {% endif %}
+        </div>
+        
+        <!-- ========== NETWORK TAB ========== -->
+        <div class="tab-pane fade" id="network" role="tabpanel">
+            
+            <!-- IP Addresses -->
+            <div class="info-section">
+                <h3 class="info-section-title">IP Address Assignments</h3>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <!-- Public IPs -->
+                    <div class="ip-section">
+                        <div class="ip-section-title">Public IP Addresses</div>
+                        <div class="ip-list">
+                            {% if server.primary_public_ip %}
+                            <div class="ip-item">
+                                <span class="ip-address">{{ server.primary_public_ip.ip_address }}</span>
+                                <span class="ip-type">Primary</span>
+                            </div>
+                            {% endif %}
+                            
+                            {% for ip in server.addon_ips if ip.network_type == 'public' %}
+                            <div class="ip-item">
+                                <span class="ip-address">{{ ip.ip_address }}</span>
+                                <span class="ip-type">Additional</span>
+                            </div>
+                            {% endfor %}
+                            
+                            {% if not server.primary_public_ip and not server.addon_ips.filter_by(network_type='public').first() %}
+                            <div class="no-data">No public IPs assigned</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    
+                    <!-- Private IPs -->
+                    <div class="ip-section">
+                        <div class="ip-section-title">Private IP Addresses</div>
+                        <div class="ip-list">
+                            {% if server.primary_private_ip %}
+                            <div class="ip-item">
+                                <span class="ip-address">{{ server.primary_private_ip.ip_address }}</span>
+                                <span class="ip-type">Primary</span>
+                            </div>
+                            {% endif %}
+                            
+                            {% for ip in server.addon_ips if ip.network_type == 'private' %}
+                            <div class="ip-item">
+                                <span class="ip-address">{{ ip.ip_address }}</span>
+                                <span class="ip-type">Additional</span>
+                            </div>
+                            {% endfor %}
+                            
+                            {% if not server.primary_private_ip and not server.addon_ips.filter_by(network_type='private').first() %}
+                            <div class="no-data">No private IPs assigned</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Total IP Count -->
+                <div style="margin-top: 20px; padding: 15px; background: rgba(255, 255, 255, 0.03); border-radius: 8px;">
+                    <strong>Total IP Addresses:</strong> {{ server.total_ip_count }}
+                    (Public: {{ server.addon_ips.filter_by(network_type='public').count() + (1 if server.primary_public_ip else 0) }}, 
+                     Private: {{ server.addon_ips.filter_by(network_type='private').count() + (1 if server.primary_private_ip else 0) }})
+                </div>
+            </div>
+            
+            <!-- Network Connections -->
+            <div class="info-section">
+                <h3 class="info-section-title">Switch Connections</h3>
+                
+                {% if server.network_connections and server.network_connections.count() > 0 %}
+                <table class="connection-table">
+                    <thead>
+                        <tr>
+                            <th>Connection Name</th>
+                            <th>Switch</th>
+                            <th>Port</th>
+                            <th>Speed</th>
+                            <th>Type</th>
+                            <th>VLAN</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for conn in server.network_connections %}
+                        <tr>
+                            <td>{{ conn.connection_name }}</td>
+                            <td>
+                                {% if conn.switch %}
+                                <a href="{{ url_for('network_devices.device_detail', device_id=conn.switch.id) }}" style="color: #60a5fa;">
+                                    {{ conn.switch.identifier }}
+                                </a>
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
+                            <td>{{ conn.switch_port }}</td>
+                            <td>{{ conn.port_speed }}</td>
+                            <td>{{ conn.connection_type|title }}</td>
+                            <td>
+                                {% if conn.native_vlan %}
+                                    VLAN {{ conn.native_vlan.vlan_id }}
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if conn.link_status == 'up' %}
+                                    <span class="connection-status status-up"></span> Up
+                                {% else %}
+                                    <span class="connection-status status-down"></span> Down
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                
+                <!-- Bandwidth Summary -->
+                <div style="margin-top: 20px; padding: 15px; background: rgba(255, 255, 255, 0.03); border-radius: 8px;">
+                    <strong>Total Bandwidth:</strong> {{ server.total_bandwidth }}
+                </div>
+                {% else %}
+                <div class="no-data">No network connections configured</div>
+                {% endif %}
+                
+                <div style="margin-top: 20px;">
+                    <a href="{{ url_for('servers.connections', id=server.id) }}" class="btn btn-secondary">
+                        <i class="fas fa-plug"></i> Manage Connections
+                    </a>
+                </div>
+            </div>
+        </div>
+        
+        <!-- ========== MANAGEMENT TAB ========== -->
+        <div class="tab-pane fade" id="management" role="tabpanel">
+            
+            <!-- IPMI Configuration -->
+            <div class="info-section">
+                <h3 class="info-section-title">IPMI / Remote Management</h3>
+                
+                {% if server.ipmi_ip %}
+                <div class="data-grid">
+                    <div class="data-item">
+                        <span class="data-label">IPMI IP Address</span>
+                        <span class="data-value">
+                            <a href="https://{{ server.ipmi_ip.ip_address }}" target="_blank" style="color: #60a5fa;">
+                                {{ server.ipmi_ip.ip_address }}
+                            </a>
+                        </span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">IPMI Type</span>
+                        <span class="data-value">{{ server.ipmi_type or '-' }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">IPMI Version</span>
+                        <span class="data-value">{{ server.ipmi_version or '-' }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">IPMI Username</span>
+                        <span class="data-value">{{ server.ipmi_username or '-' }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">IPMI MAC Address</span>
+                        <span class="data-value">{{ server.ipmi_mac_address or '-' }}</span>
+                    </div>
+                    <div class="data-item">
+                        <span class="data-label">Web Port</span>
+                        <span class="data-value">{{ server.ipmi_web_port or '443' }}</span>
+                    </div>
+                </div>
+                
+                {% if server.ipmi_notes %}
+                <div style="margin-top: 15px;">
+                    <strong>IPMI Notes:</strong>
+                    <div class="notes-content" style="margin-top: 10px;">{{ server.ipmi_notes }}</div>
+                </div>
+                {% endif %}
+                
+                <div style="margin-top: 20px;">
+                    <a href="https://{{ server.ipmi_ip.ip_address }}" target="_blank" class="btn btn-success">
+                        <i class="fas fa-external-link-alt"></i> Open IPMI Interface
+                    </a>
+                </div>
+                {% else %}
+                <div class="no-data">No IPMI/remote management configured</div>
+                {% endif %}
+            </div>
+            
+            <!-- Power Configuration -->
+            <div class="info-section">
+                <h3 class="info-section-title">Power Configuration</h3>
+                
+                <div class="power-grid">
+                    <!-- Primary Power -->
+                    <div class="power-card">
+                        <div class="power-card-title">
+                            <i class="fas fa-plug"></i> Primary Power
+                        </div>
+                        <div class="power-details">
+                            {% if server.pdu_1 %}
+                            <div class="power-item">
+                                <span class="power-label">PDU</span>
+                                <span class="power-value">
+                                    <a href="{{ url_for('pdus.outlet_view', pdu_id=server.pdu_1.id) }}" style="color: #60a5fa;">
+                                        {{ server.pdu_1.identifier }}
+                                    </a>
+                                </span>
+                            </div>
+                            <div class="power-item">
+                                <span class="power-label">Outlet</span>
+                                <span class="power-value">{{ server.pdu_1_outlet }}</span>
+                            </div>
+                            <div class="power-item">
+                                <span class="power-label">Capacity</span>
+                                <span class="power-value">{{ server.pdu_1.capacity_amps }}A @ {{ server.pdu_1.voltage }}V</span>
+                            </div>
+                            {% else %}
+                            <div class="no-data">Not configured</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    
+                    <!-- Redundant Power -->
+                    <div class="power-card">
+                        <div class="power-card-title">
+                            <i class="fas fa-plug"></i> Redundant Power
+                        </div>
+                        <div class="power-details">
+                            {% if server.pdu_2 %}
+                            <div class="power-item">
+                                <span class="power-label">PDU</span>
+                                <span class="power-value">
+                                    <a href="{{ url_for('pdus.outlet_view', pdu_id=server.pdu_2.id) }}" style="color: #60a5fa;">
+                                        {{ server.pdu_2.identifier }}
+                                    </a>
+                                </span>
+                            </div>
+                            <div class="power-item">
+                                <span class="power-label">Outlet</span>
+                                <span class="power-value">{{ server.pdu_2_outlet }}</span>
+                            </div>
+                            <div class="power-item">
+                                <span class="power-label">Capacity</span>
+                                <span class="power-value">{{ server.pdu_2.capacity_amps }}A @ {{ server.pdu_2.voltage }}V</span>
+                            </div>
+                            {% else %}
+                            <div class="no-data">Not configured</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Power Redundancy Status -->
+                {% if server.pdu_1 and server.pdu_2 %}
+                    {% if server.pdu_1_id == server.pdu_2_id %}
+                    <div class="redundancy-warning">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        Primary and redundant power are on the same PDU - no true redundancy
+                    </div>
+                    {% else %}
+                    <div class="redundancy-warning redundancy-ok">
+                        <i class="fas fa-check-circle"></i>
+                        Power redundancy configured correctly
+                    </div>
+                    {% endif %}
+                {% elif server.pdu_1 and not server.pdu_2 %}
+                <div class="redundancy-warning">
+                    <i class="fas fa-info-circle"></i>
+                    No redundant power configured
+                </div>
+                {% endif %}
+                
+                <!-- Power Consumption -->
+                {% if server.power_draw_watts %}
+                <div style="margin-top: 20px; padding: 15px; background: rgba(255, 255, 255, 0.03); border-radius: 8px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong>Power Draw:</strong> {{ server.power_draw_watts }}W
+                        </div>
+                        <div>
+                            <strong>Power Supply Config:</strong> {{ server.power_supply_config or 'Standard' }}
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- ========== HISTORY TAB ========== -->
+        <div class="tab-pane fade" id="history" role="tabpanel">
+            
+            <!-- Timestamps -->
+            <div class="info-section">
+                <h3 class="info-section-title">Activity History</h3>
+                
+                <div class="timestamp-grid">
+                    <div class="timestamp-item">
+                        <span class="timestamp-label">Created</span>
+                        <span class="timestamp-value">
+                            {{ server.created_at.strftime('%Y-%m-%d %H:%M:%S') if server.created_at else 'Unknown' }}
+                        </span>
+                    </div>
+                    <div class="timestamp-item">
+                        <span class="timestamp-label">Last Modified</span>
+                        <span class="timestamp-value">
+                            {{ server.updated_at.strftime('%Y-%m-%d %H:%M:%S') if server.updated_at else 'Never' }}
+                        </span>
+                    </div>
+                    {% if server.provisioned_date %}
+                    <div class="timestamp-item">
+                        <span class="timestamp-label">Provisioned</span>
+                        <span class="timestamp-value">
+                            {{ server.provisioned_date.strftime('%Y-%m-%d') }}
+                        </span>
+                    </div>
+                    {% endif %}
+                    {% if server.decommissioned_date %}
+                    <div class="timestamp-item">
+                        <span class="timestamp-label">Decommissioned</span>
+                        <span class="timestamp-value">
+                            {{ server.decommissioned_date.strftime('%Y-%m-%d') }}
+                        </span>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <!-- Audit Log (placeholder for future implementation) -->
+            <div class="info-section">
+                <h3 class="info-section-title">Recent Changes</h3>
+                <div class="no-data">Audit logging will be available in a future update</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<!-- Bootstrap Tab Dependencies -->
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+// Initialize tabs
+document.addEventListener('DOMContentLoaded', function() {
+    // Enable Bootstrap tabs
+    $('#serverTabs a').on('click', function (e) {
+        e.preventDefault();
+        $(this).tab('show');
+    });
+});
+</script>
+{% endblock %}
