@@ -1,0 +1,291 @@
+# DCMS Phased Deployment Plan
+
+## Executive Summary
+This document outlines the incremental deployment strategy for the Data Center Management System (DCMS), focusing on delivering immediate value through small, iterative phases.
+
+---
+
+## 🎯 Phase 1: IPAM Foundation (Week 1)
+**Goal: Establish network visibility**
+
+### Deliverables
+- [ ] Import ARIN allocations from CSV
+- [ ] Parse router config for VLAN-to-subnet mappings
+- [ ] Create basic database schema for IPRange and VLAN models
+- [ ] Display all VLANs with their associated subnets
+- [ ] Show total IP count per subnet
+
+### Success Metrics
+- Can see all 5 ARIN allocations
+- Can see all VLANs with their subnets (including secondaries)
+- Can identify which VLANs are for infrastructure vs. colo
+
+### Technical Tasks
+```python
+# Core models needed:
+- IPRange: network, cidr, vlan_id, network_type
+- VLAN: vlan_id, name, description, purpose (infra/colo)
+- VLANSubnet: vlan_id, subnet, gateway, is_primary
+```
+
+---
+
+## 🔍 Phase 2: Capacity Tracking (Week 2)
+**Goal: Understand what's available**
+
+### Deliverables
+- [ ] Add manual available/used counters per subnet
+- [ ] Calculate and display utilization percentages
+- [ ] Visual utilization bars (color-coded)
+- [ ] Capacity alerts for high utilization (>80%)
+- [ ] Dashboard view with critical metrics
+
+### Success Metrics
+- Can answer "How many IPs left in 66.x for colo?"
+- Can answer "Which VLANs can fit a 5-IP dedicated server?"
+- Visual warnings for nearly-full subnets
+
+### Key Features
+```
+Dashboard shows:
+- Colo capacity remaining (66.x blocks)
+- VLANs suitable for dedicated deployment (5+ IPs)
+- Utilization heat map
+- Growth trending
+```
+
+---
+
+## 📝 Phase 3: IP Assignment Tracking (Week 3)
+**Goal: Start tracking individual allocations**
+
+### Deliverables
+- [ ] IP assignment form (no validation yet)
+- [ ] Bulk assignment (5 IPs for dedicated)
+- [ ] Track server_id with assignments
+- [ ] Identify "Colo*" prefix patterns
+- [ ] Basic deallocation workflow
+- [ ] Update available counts automatically
+
+### Success Metrics
+- Can record new IP assignments
+- Can track which IPs belong together (dedicated server groups)
+- Available counts update when IPs assigned/released
+
+### Data Model Addition
+```python
+# Add to models:
+- IPAddress: ip_address, vlan_id, server_id, ip_type
+- IPAssignment: server_id, ip_list, assignment_date
+```
+
+---
+
+## ✅ Phase 4: Validation Layer (Week 4)
+**Goal: Prevent configuration errors**
+
+### Deliverables
+- [ ] Auto-detect VLAN from IP address
+- [ ] Prevent duplicate IP assignments
+- [ ] Validate IPs are within defined ranges
+- [ ] Enforce Colo* servers use 66.x space
+- [ ] Validate all IPs for a server from same subnet
+- [ ] Block invalid configurations
+
+### Success Metrics
+- Zero invalid IP-to-VLAN mappings
+- Cannot assign same IP twice
+- Cannot put colo customer on infrastructure IPs
+- Form validations prevent all common errors
+
+### Validation Rules
+```python
+Rules to implement:
+1. IP must be within defined ARIN ranges
+2. IP determines VLAN (not user choice)
+3. Colo* prefix → must use 66.x space
+4. All IPs for one server from same subnet
+5. No duplicate assignments
+```
+
+---
+
+## 🚀 Phase 5: Server Module Beta (Week 5)
+**Goal: Basic server tracking with IP integration**
+
+### Deliverables
+- [ ] Basic server CRUD operations
+- [ ] Integration with IPAM for IP selection
+- [ ] Auto-populate VLAN from IP
+- [ ] Support multiple IP assignments (public/private/IPMI)
+- [ ] Server listing with IP display
+
+### Success Metrics
+- Can add server with validated IPs
+- VLAN auto-fills correctly
+- Can assign multiple IPs to one server
+- Can view all IPs for a server
+
+### Server Module Fields (Minimum)
+```
+- server_id (manual entry, check for Colo* prefix)
+- server_name
+- server_type (Dedicated/VPS/Colo)
+- ipmi_ip (single, public or private)
+- public_ips (multiple, same VLAN enforced)
+- private_ips (multiple, no VLAN restriction)
+- status (Active/Inactive)
+```
+
+---
+
+## 🏢 Phase 6: Colocation Module Beta (Week 6)
+**Goal: Track customer allocations**
+
+### Deliverables
+- [ ] Basic customer management
+- [ ] Assign VLAN/subnet blocks to customers
+- [ ] Track colo rack assignments
+- [ ] Show customer resource utilization
+- [ ] Enforce 66.x space usage
+
+### Success Metrics
+- Can track which customer has which VLAN
+- Can see colo capacity by customer
+- Can identify legacy colos in wrong space
+
+### Colo Module Fields (Minimum)
+```
+- customer_name
+- whmcs_id
+- vlan_assignments (list of VLANs)
+- ip_blocks (66.x allocations)
+- rack_assignments
+- status
+```
+
+---
+
+## 🔄 Phase 7: Integration & Workflow (Week 7)
+**Goal: Make modules work together seamlessly**
+
+### Deliverables
+- [ ] Cross-module validation
+- [ ] Unified search across all modules
+- [ ] "New Dedicated Server" workflow
+- [ ] "New Colo Customer" workflow
+- [ ] Bulk operations support
+
+### Success Metrics
+- Can provision new dedicated in <2 minutes
+- Can onboard new colo customer with proper validations
+- Search finds any IP/server/customer instantly
+
+---
+
+## 📊 Phase 8: Reporting & Compliance (Week 8)
+**Goal: Business intelligence and compliance**
+
+### Deliverables
+- [ ] ARIN utilization reports
+- [ ] Find misplaced colo customers (cleanup list)
+- [ ] Capacity planning reports
+- [ ] Audit trail/change history
+- [ ] Growth trending analysis
+
+### Success Metrics
+- ARIN report generation in one click
+- Can identify all colos in infrastructure space
+- Management has visibility into capacity
+
+---
+
+## 🔮 Future Phases (Backlog)
+
+### Phase 9: Advanced Features
+- IPv6 support (when needed)
+- WHMCS API integration
+- Observium integration
+- Automated conflict detection
+
+### Phase 10: Automation
+- Switch configuration generation
+- Automated IP provisioning
+- API for external systems
+- Bulk import from legacy system
+
+---
+
+## 📋 Implementation Notes
+
+### Development Environment
+- Start with SQLite for simplicity
+- Use Flask development server
+- No authentication initially (add later)
+- Focus on functionality over UI polish
+
+### Data Migration Strategy
+- NO bulk import from legacy system (untrusted data)
+- Manual verification and entry
+- Build clean dataset from scratch
+- Legacy system remains read-only reference
+
+### Critical Success Factors
+1. **Each phase must provide standalone value**
+2. **No phase should take more than 1 week**
+3. **Test with real workflows immediately**
+4. **Get team using it by Phase 3**
+5. **Document issues for next phase fixes**
+
+### Risk Mitigation
+- Keep legacy system running in parallel
+- No "big bang" cutover
+- Gradual migration as confidence builds
+- Rollback plan for each phase
+
+---
+
+## 🎯 Key Milestones
+
+| Week | Milestone | Success Criteria |
+|------|-----------|------------------|
+| 1 | Network Visible | Can see all VLANs/subnets |
+| 2 | Capacity Known | Know colo space remaining |
+| 3 | Tracking Active | Recording new assignments |
+| 4 | Validation Working | No invalid configs possible |
+| 5 | Servers Tracked | Server module operational |
+| 6 | Colos Managed | Customer allocations visible |
+| 7 | Integrated System | Modules working together |
+| 8 | Production Ready | Reports and compliance active |
+
+---
+
+## 📝 Session Handoff Notes
+
+### Key Discoveries from Planning Session
+1. **66.x blocks are SWIP'd space for colo only** (protects IP reputation)
+2. **VLANs can have multiple subnets** (primary + secondaries due to exhaustion)
+3. **Dedicated servers need 5 IPs from same subnet** (not just same VLAN)
+4. **Some servers have 100+ IPs** (edge case but must support)
+5. **IPMI can be on public or private network** (varies by server)
+6. **No VLAN tagging on private network** (flat network)
+7. **Colo racks are separate from infrastructure racks** (no mixing)
+8. **All colo customers have "Colo" prefix in server ID**
+
+### Technical Decisions Made
+- Build breadth-first (all modules minimal, then enhance)
+- No data import from legacy system (untrusted)
+- Start with IPAM as foundation
+- Validate everything (especially IP-to-VLAN)
+- Keep it simple (no complex integrations initially)
+
+### Open Questions for Next Session
+- IP assignment UI: checkboxes vs. range entry?
+- How to handle servers with 100+ IPs efficiently?
+- Audit trail: how detailed should it be?
+- Should we track switch port assignments?
+- How to handle VLAN creation (router updates)?
+
+---
+
+*Use this document to start your next session. Begin with: "I'm building the DCMS system. Here's my phased deployment plan. I'm ready to start on Phase [X]."*
