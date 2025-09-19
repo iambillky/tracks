@@ -320,9 +320,26 @@ def add():
                 try:
                     connections_data = json.loads(request.form.get('network_connections'))
                     for conn_data in connections_data:
+                        # Find the actual switch port
+                        from models.switch_port import SwitchPort
+                        switch_port_obj = SwitchPort.query.filter_by(
+                            switch_id=int(conn_data['switchId']),
+                            port_number=int(conn_data['port'])
+                        ).first()
+                        
+                        if not switch_port_obj:
+                            print(f"Port {conn_data['port']} not found on switch")
+                            continue
+                        
+                        if switch_port_obj.connected_device_type:
+                            print(f"Port {conn_data['port']} already in use")
+                            continue
+                        
+                        # Create connection with proper switch_port_id
                         connection = ServerNetworkConnection(
                             server_id=server.id,
                             switch_id=int(conn_data['switchId']),
+                            switch_port_id=switch_port_obj.id,  # Use the actual port ID
                             switch_port=int(conn_data['port']),
                             speed=conn_data['speed'],
                             connection_type=conn_data['type'],
@@ -330,6 +347,12 @@ def add():
                             is_active=True
                         )
                         db.session.add(connection)
+                        
+                        # Mark the switch port as connected
+                        switch_port_obj.connected_device_type = 'server'
+                        switch_port_obj.connected_device_id = server.id
+                        switch_port_obj.description = f"Server {server.server_id}"
+                        
                 except Exception as e:
                     print(f"Error processing network connections: {e}")
 
@@ -629,79 +652,100 @@ def connections(id):
                          grouped_connections=grouped,
                          total_bandwidth=total_bandwidth)
 
-@servers_bp.route('/<int:id>/connections/add', methods=['GET', 'POST'])
-def add_connection(id):
-    """Add network connection to server"""
-    server = Server.query.get_or_404(id)
-    form = NetworkConnectionForm()
-    
-    # Populate switch choices
-    switches = NetworkDevice.query.filter_by(device_type='Switch').order_by(NetworkDevice.identifier).all()
-    form.switch_id.choices = [(0, '-- Select Switch --')] + [
-        (s.id, f"{s.identifier} - {s.hostname}") for s in switches
-    ]
-    
-    # VLAN choices
-    vlans = VLAN.query.filter_by(status='active').order_by(VLAN.vlan_id).all()
-    form.native_vlan_id.choices = [(0, '-- No VLAN --')] + [
-        (v.id, f"VLAN {v.vlan_id} - {v.description}") for v in vlans
-    ]
-    
-    if form.validate_on_submit():
+    @servers_bp.route('/<int:id>/connections/add', methods=['GET', 'POST'])
+    def add_connection(id):
+        """Add network connection to server"""
+        server = Server.query.get_or_404(id)
+        form = NetworkConnectionForm()
+        
+        # Populate switch choices
+        switches = NetworkDevice.query.filter_by(device_type='Switch').order_by(NetworkDevice.identifier).all()
+        form.switch_id.choices = [(0, '-- Select Switch --')] + [
+            (s.id, f"{s.identifier} - {s.hostname}") for s in switches
+        ]
+        
+        # VLAN choices
+        vlans = VLAN.query.filter_by(status='active').order_by(VLAN.vlan_id).all()
+        form.native_vlan_id.choices = [(0, '-- No VLAN --')] + [
+            (v.id, f"VLAN {v.vlan_id} - {v.description}") for v in vlans
+        ]
+        
+        if form.validate_on_submit():
+            try:
+                # Find the actual switch port first
+                from models.switch_port import SwitchPort
+                switch_port_obj = SwitchPort.query.filter_by(
+                    switch_id=form.switch_id.data,
+                    port_number=form.switch_port.data
+                ).first()
+                
+                if not switch_port_obj:
+                    flash('Switch port not found', 'error')
+                    return render_template('servers/add_connection.html', form=form, server=server)
+                
+                # Check if port is already taken
+                if switch_port_obj.connected_device_type:
+                    flash(f'Port {form.switch_port.data} is already in use', 'error')
+                    return render_template('servers/add_connection.html', form=form, server=server)
+                
+                # Create connection with the switch_port_id
+                connection = ServerNetworkConnection(
+                    server_id=server.id,
+                    connection_name=form.connection_name.data,
+                    connection_type=form.connection_type.data,
+                    switch_id=form.switch_id.data,
+                    switch_port_id=switch_port_obj.id,  # THIS IS KEY - use the actual port ID
+                    switch_port=form.switch_port.data,  # Keep for backward compatibility
+                    native_vlan_id=form.native_vlan_id.data,
+                    speed=form.speed.data,
+                    mac_address=form.mac_address.data,
+                    is_active=form.is_active.data
+                )
+                
+                # Mark the switch port as connected to this server
+                switch_port_obj.connected_device_type = 'server'
+                switch_port_obj.connected_device_id = server.id
+                switch_port_obj.description = f"Server {server.server_id}"
+                
+                db.session.add(connection)
+                db.session.commit()
+                
+                flash(f'Connection {connection.connection_name} added successfully', 'success')
+                return redirect(url_for('servers.connections', id=server.id))
+                
+            except Exception as e:
+                db.session.rollback()
+                flash(f'Error adding connection: {str(e)}', 'error')
+        
+        return render_template('servers/add_connection.html', form=form, server=server)
+
+    @servers_bp.route('/<int:server_id>/connections/<int:conn_id>/delete', methods=['POST'])
+    def delete_connection(server_id, conn_id):
+        """Delete network connection"""
+        connection = ServerNetworkConnection.query.get_or_404(conn_id)
+        
+        if connection.server_id != server_id:
+            flash('Invalid connection', 'error')
+            return redirect(url_for('servers.connections', id=server_id))
+        
         try:
-            # Check port availability
-            existing = ServerNetworkConnection.query.filter_by(
-                switch_id=form.switch_id.data,
-                switch_port=form.switch_port.data
-            ).first()
+            # FREE UP THE SWITCH PORT - THIS IS THE FIX
+            if connection.switch_port_id:
+                from models.switch_port import SwitchPort
+                switch_port = SwitchPort.query.get(connection.switch_port_id)
+                if switch_port:
+                    switch_port.connected_device_type = None
+                    switch_port.connected_device_id = None
+                    switch_port.description = None
             
-            if existing:
-                flash(f'Port {form.switch_port.data} already in use on this switch', 'error')
-                return render_template('servers/add_connection.html', form=form, server=server)
-            
-            # Create connection
-            connection = ServerNetworkConnection(
-                server_id=server.id,
-                connection_name=form.connection_name.data,
-                connection_type=form.connection_type.data,
-                switch_id=form.switch_id.data,
-                switch_port=form.switch_port.data,
-                native_vlan_id=form.native_vlan_id.data,
-                speed=form.speed.data,
-                mac_address=form.mac_address.data,
-                is_active=form.is_active.data
-            )
-            
-            db.session.add(connection)
+            db.session.delete(connection)
             db.session.commit()
-            
-            flash(f'Connection {connection.connection_name} added successfully', 'success')
-            return redirect(url_for('servers.connections', id=server.id))
-            
+            flash(f'Connection {connection.connection_name} deleted', 'success')
         except Exception as e:
             db.session.rollback()
-            flash(f'Error adding connection: {str(e)}', 'error')
-    
-    return render_template('servers/add_connection.html', form=form, server=server)
-
-@servers_bp.route('/<int:server_id>/connections/<int:conn_id>/delete', methods=['POST'])
-def delete_connection(server_id, conn_id):
-    """Delete network connection"""
-    connection = ServerNetworkConnection.query.get_or_404(conn_id)
-    
-    if connection.server_id != server_id:
-        flash('Invalid connection', 'error')
+            flash(f'Error deleting connection: {str(e)}', 'error')
+        
         return redirect(url_for('servers.connections', id=server_id))
-    
-    try:
-        db.session.delete(connection)
-        db.session.commit()
-        flash(f'Connection {connection.connection_name} deleted', 'success')
-    except Exception as e:
-        db.session.rollback()
-        flash(f'Error deleting connection: {str(e)}', 'error')
-    
-    return redirect(url_for('servers.connections', id=server_id))
 
 # ========== IP ASSIGNMENT MANAGEMENT ==========
 

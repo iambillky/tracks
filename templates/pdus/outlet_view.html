@@ -767,9 +767,15 @@ IMPORTANT: This version requires devices to have actual power_consumption values
                 {% for device in connected_devices %}
                 <tr>
                     <td>
-                        <a href="{{ url_for('network_devices.device_detail', device_id=device.id) }}" class="device-link">
-                            {{ device.identifier }}
-                        </a>
+                        {% if device.device_type is defined and device.device_type == 'server' %}
+                             <a href="{{ url_for('servers.view', id=device.id) }}" class="device-link">
+                                  {{ device.server_id }}
+                                </a>
+                                {% else %}
+                                    <a href="{{ url_for('network_devices.device_detail', device_id=device.id) }}" class="device-link">
+                                        {{ device.identifier }}
+                                </a>
+                             {% endif %}
                     </td>
                     <td>
                         {% if device.pdu_1_id == pdu.id %}
